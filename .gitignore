@@ -1,0 +1,35 @@
+# Sensitive files (MUST NOT be committed)
+.omo/
+.env
+.env.*
+*.key
+*.pem
+*token*
+*secret*
+ses_*
+
+# Dependencies / caches
+node_modules/
+__pycache__/
+.gradle/
+build/
+*/build/
+
+# OS / IDE
+.DS_Store
+.idea/
+*.iml
+.vscode/
+
+# Android / local
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+captures/
+.cxx/
+
+# Project docs kept local only
+design.txt
+docs/

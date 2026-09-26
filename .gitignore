@@ -34,8 +34,10 @@ captures/
 design.txt
 design/
 video/
-DEVELOP.md
-docs/
+核心内容.md
+Bug清单.md
+已修Bug.md
+日志.md
 
 # Publish staging folder + its sync script (local only)
 github/

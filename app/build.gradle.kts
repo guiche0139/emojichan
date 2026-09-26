@@ -1,7 +1,7 @@
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("com.google.devtools.ksp")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -14,6 +14,8 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "0.1.1"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -35,24 +37,42 @@ android {
         jvmTarget = "17"
     }
 
-    buildFeatures {
-        viewBinding = true
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
     }
 }
 
+// Robolectric 首次运行会自行下载 android-all jar（约 163 MB）。默认源是 maven 中央仓库，
+// 本机实测只有约 1 MB/s 且会长时间卡住；改用阿里云镜像（实测 100 MB/s 以上）。
+tasks.withType<Test>().configureEach {
+    systemProperty("robolectric.dependency.repo.id", "aliyun")
+    systemProperty("robolectric.dependency.repo.url", "https://maven.aliyun.com/repository/public")
+}
+
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.room:room-runtime:2.6.0")
-    implementation("androidx.room:room-ktx:2.6.0")
-    ksp("androidx.room:room-compiler:2.6.0")
-    implementation("com.github.bumptech.glide:glide:4.16.0")
-    ksp("com.github.bumptech.glide:ksp:4.16.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("com.google.code.gson:gson:2.10.1")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.material)
+    implementation(libs.androidx.constraintlayout)
+
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    implementation(libs.glide)
+    ksp(libs.glide.ksp)
+
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -21,6 +21,10 @@ class EmojiRepository(context: Context) {
     fun searchInCategory(query: String, category: String): Flow<List<EmojiEntity>> =
         emojiDao.searchInCategory(query, category)
 
+    fun observeById(id: Long): Flow<EmojiEntity?> = emojiDao.observeById(id)
+
+    suspend fun getById(id: Long): EmojiEntity? = emojiDao.getById(id)
+
     fun getAllCategories(): Flow<List<String>> = emojiDao.getAllCategories()
 
     fun getCount(): Flow<Int> = emojiDao.getCount()
@@ -33,13 +37,17 @@ class EmojiRepository(context: Context) {
 
     suspend fun deleteByIds(ids: List<Long>) = emojiDao.deleteByIds(ids)
 
+    suspend fun getByIds(ids: List<Long>): List<EmojiEntity> = emojiDao.getByIds(ids)
+
     suspend fun getFilePathsByIds(ids: List<Long>): List<String> =
         emojiDao.getFilePathsByIds(ids)
 
-    suspend fun rename(id: Long, newName: String) = emojiDao.rename(id, newName)
+    /** @return 实际更新的行数，0 表示该 id 已不存在。 */
+    suspend fun rename(id: Long, newName: String): Int = emojiDao.rename(id, newName)
 
     suspend fun update(emoji: EmojiEntity) = emojiDao.update(emoji)
 
-    suspend fun updateFavorite(id: Long, isFavorite: Boolean) =
+    /** @return 实际更新的行数，0 表示该 id 已不存在。 */
+    suspend fun updateFavorite(id: Long, isFavorite: Boolean): Int =
         emojiDao.updateFavorite(id, isFavorite)
 }

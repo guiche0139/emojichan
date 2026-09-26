@@ -45,14 +45,25 @@ interface EmojiDao {
     @Query("SELECT filePath FROM emojis WHERE id IN (:ids)")
     suspend fun getFilePathsByIds(ids: List<Long>): List<String>
 
+    @Query("SELECT * FROM emojis WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<EmojiEntity>
+
+    /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     @Query("UPDATE emojis SET name = :newName WHERE id = :id")
-    suspend fun rename(id: Long, newName: String)
+    suspend fun rename(id: Long, newName: String): Int
 
     @Update
     suspend fun update(emoji: EmojiEntity)
 
+    /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     @Query("UPDATE emojis SET isFavorite = :isFavorite WHERE id = :id")
-    suspend fun updateFavorite(id: Long, isFavorite: Boolean)
+    suspend fun updateFavorite(id: Long, isFavorite: Boolean): Int
+
+    @Query("SELECT * FROM emojis WHERE id = :id")
+    fun observeById(id: Long): Flow<EmojiEntity?>
+
+    @Query("SELECT * FROM emojis WHERE id = :id")
+    suspend fun getById(id: Long): EmojiEntity?
 
     @Query("SELECT COUNT(*) FROM emojis")
     fun getCount(): Flow<Int>

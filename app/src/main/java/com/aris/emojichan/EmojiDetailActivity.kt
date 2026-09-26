@@ -24,7 +24,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * 表情详情页。
+ *
+ * 设计要点：Intent 只携带 [EXTRA_EMOJI_ID]，页面数据一律来自数据库 Flow，
+ * 不在页面间搬运实体。写操作只更新目标列（改名 / 收藏），不会覆盖
+ * tags、source、usageCount、lastUsedTime 等字段。
+ */
 class EmojiDetailActivity : AppCompatActivity() {
+
+    companion object {
+        const val EXTRA_EMOJI_ID = "emoji_id"
+    }
 
     private lateinit var viewModel: EmojiViewModel
     private lateinit var toolbar: MaterialToolbar
@@ -35,16 +46,10 @@ class EmojiDetailActivity : AppCompatActivity() {
     private lateinit var btnRename: Button
     private lateinit var btnDelete: Button
 
-    private var emojiId: Long = 0
-    private var emojiNameStr: String = ""
-    private var emojiFilePath: String = ""
-    private var emojiFileType: String = ""
-    private var emojiCategory: String = ""
-    private var emojiIsFavorite: Boolean = false
-    private var emojiFileSize: Long = 0
-    private var emojiCreateTime: Long = 0
-    private var emojiWidth: Int = 0
-    private var emojiHeight: Int = 0
+    /** 当前表情的数据库真值；由 [observeEmoji] 持续刷新，写操作一律以它为准。 */
+    private var currentEmoji: EmojiEntity? = null
+
+    private val emojiId: Long by lazy { intent.getLongExtra(EXTRA_EMOJI_ID, 0L) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,23 +57,17 @@ class EmojiDetailActivity : AppCompatActivity() {
 
         viewModel = ViewModelProvider(this)[EmojiViewModel::class.java]
 
-        intent.extras?.let { extras ->
-            emojiId = extras.getLong("emoji_id", 0)
-            emojiNameStr = extras.getString("emoji_name", "")
-            emojiFilePath = extras.getString("emoji_file_path", "")
-            emojiFileType = extras.getString("emoji_file_type", "")
-            emojiCategory = extras.getString("emoji_category", "")
-            emojiIsFavorite = extras.getBoolean("emoji_is_favorite", false)
-            emojiFileSize = extras.getLong("emoji_file_size", 0)
-            emojiCreateTime = extras.getLong("emoji_create_time", 0)
-            emojiWidth = extras.getInt("emoji_width", 0)
-            emojiHeight = extras.getInt("emoji_height", 0)
-        }
-
         initViews()
         setupToolbar()
-        displayEmojiInfo()
+        observeMessage()
         setupButtons()
+
+        if (emojiId == 0L) {
+            Toast.makeText(this, "表情不存在", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        observeEmoji()
     }
 
     private fun initViews() {
@@ -87,61 +86,64 @@ class EmojiDetailActivity : AppCompatActivity() {
         toolbar.setNavigationOnClickListener { finish() }
     }
 
-    private fun displayEmojiInfo() {
-        // Load image
+    /** 订阅数据库：记录被删除时自动关闭页面；写入成功后 UI 自动回灌真值。 */
+    private fun observeEmoji() {
+        lifecycleScope.launch {
+            viewModel.observeEmoji(emojiId).collectLatest { emoji ->
+                if (emoji == null) {
+                    currentEmoji = null
+                    finish()
+                    return@collectLatest
+                }
+                currentEmoji = emoji
+                displayEmojiInfo(emoji)
+            }
+        }
+    }
+
+    private fun observeMessage() {
+        lifecycleScope.launch {
+            viewModel.message.collectLatest { msg ->
+                if (msg != null) {
+                    Toast.makeText(this@EmojiDetailActivity, msg, Toast.LENGTH_SHORT).show()
+                    viewModel.consumeMessage()
+                }
+            }
+        }
+    }
+
+    private fun displayEmojiInfo(emoji: EmojiEntity) {
         Glide.with(this)
-            .load(File(emojiFilePath))
+            .load(File(emoji.filePath))
             .transform(CenterCrop(), RoundedCorners(16))
             .placeholder(R.drawable.ic_emoji_placeholder)
             .error(R.drawable.ic_emoji_placeholder)
             .into(emojiImage)
 
-        // Set name
-        emojiName.text = emojiNameStr
+        emojiName.text = emoji.name
 
-        // Format info
-        val fileSizeFormatted = formatFileSize(emojiFileSize)
+        val fileSizeFormatted = formatFileSize(emoji.fileSize)
         val dateFormatted = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-            .format(Date(emojiCreateTime))
-        val sizeText = if (emojiWidth > 0 && emojiHeight > 0) {
-            " | 尺寸: ${emojiWidth}×${emojiHeight}"
+            .format(Date(emoji.createTime))
+        val sizeText = if (emoji.width > 0 && emoji.height > 0) {
+            " | 尺寸: ${emoji.width}×${emoji.height}"
         } else {
             ""
         }
-        emojiInfo.text = "分类: $emojiCategory | 大小: $fileSizeFormatted$sizeText | 添加于: $dateFormatted"
+        emojiInfo.text = "分类: ${emoji.category} | 大小: $fileSizeFormatted$sizeText | 添加于: $dateFormatted"
 
-        // Update favorite button
-        updateFavoriteButton()
+        updateFavoriteButton(emoji.isFavorite)
     }
 
-    private fun updateFavoriteButton() {
-        if (emojiIsFavorite) {
-            btnFavorite.text = "取消收藏"
-        } else {
-            btnFavorite.text = "收藏"
-        }
-    }
-
-    private fun currentEmoji(): EmojiEntity {
-        return EmojiEntity(
-            id = emojiId,
-            name = emojiNameStr,
-            filePath = emojiFilePath,
-            fileType = emojiFileType,
-            category = emojiCategory,
-            isFavorite = emojiIsFavorite,
-            fileSize = emojiFileSize,
-            createTime = emojiCreateTime,
-            width = emojiWidth,
-            height = emojiHeight
-        )
+    private fun updateFavoriteButton(isFavorite: Boolean) {
+        btnFavorite.text = if (isFavorite) "取消收藏" else "收藏"
     }
 
     private fun setupButtons() {
         btnFavorite.setOnClickListener {
-            emojiIsFavorite = !emojiIsFavorite
-            viewModel.toggleFavorite(currentEmoji())
-            updateFavoriteButton()
+            val emoji = currentEmoji ?: return@setOnClickListener
+            // 只写 isFavorite 一列，不做整行覆盖
+            viewModel.updateFavorite(emoji.id, !emoji.isFavorite)
         }
 
         btnRename.setOnClickListener {
@@ -161,21 +163,20 @@ class EmojiDetailActivity : AppCompatActivity() {
     }
 
     private fun showRenameDialog() {
+        val emoji = currentEmoji ?: return
         val input = EditText(this).apply {
-            setText(emojiNameStr)
-            setSelection(emojiNameStr.length)
+            setText(emoji.name)
+            setSelection(emoji.name.length)
         }
         MaterialAlertDialogBuilder(this)
             .setTitle("重命名")
             .setView(input)
             .setPositiveButton("确定") { _, _ ->
                 val newName = input.text.toString().trim()
-                if (newName.isEmpty()) {
-                    Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show()
-                } else if (newName != emojiNameStr) {
-                    viewModel.renameEmoji(emojiId, newName)
-                    emojiNameStr = newName
-                    emojiName.text = newName
+                when {
+                    newName.isEmpty() ->
+                        Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show()
+                    newName != emoji.name -> viewModel.renameEmoji(emoji.id, newName)
                 }
             }
             .setNegativeButton("取消", null)
@@ -183,8 +184,9 @@ class EmojiDetailActivity : AppCompatActivity() {
     }
 
     private fun deleteEmoji() {
-        viewModel.deleteEmoji(currentEmoji())
-        ImageUtil.deleteFile(emojiFilePath)
+        val emoji = currentEmoji ?: return
+        viewModel.deleteEmoji(emoji)
+        ImageUtil.deleteFile(emoji.filePath)
         Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
         finish()
     }

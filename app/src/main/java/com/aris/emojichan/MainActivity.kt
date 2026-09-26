@@ -171,7 +171,8 @@ class MainActivity : AppCompatActivity() {
                 viewModel.toggleSelection(emoji.id)
             },
             onFavoriteClick = { emoji ->
-                viewModel.toggleFavorite(emoji)
+                // 只写 isFavorite 一列，避免整行覆盖清空 tags / usageCount 等字段
+                viewModel.updateFavorite(emoji.id, !emoji.isFavorite)
             },
             isSelectionMode = { viewModel.isSelectionMode.value },
             selectedIds = { viewModel.selectedIds.value }
@@ -240,6 +241,15 @@ class MainActivity : AppCompatActivity() {
                 adapter.notifyDataSetChanged()
             }
         }
+
+        lifecycleScope.launch {
+            viewModel.message.collectLatest { msg ->
+                if (msg != null) {
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    viewModel.consumeMessage()
+                }
+            }
+        }
     }
 
     private fun importImage(uri: android.net.Uri) {
@@ -267,17 +277,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openEmojiDetail(emoji: EmojiEntity) {
+        // 只传 id，详情页按 id 订阅数据库真值，避免搬运残缺实体导致字段被覆盖
         val intent = Intent(this, EmojiDetailActivity::class.java).apply {
-            putExtra("emoji_id", emoji.id)
-            putExtra("emoji_name", emoji.name)
-            putExtra("emoji_file_path", emoji.filePath)
-            putExtra("emoji_file_type", emoji.fileType)
-            putExtra("emoji_category", emoji.category)
-            putExtra("emoji_is_favorite", emoji.isFavorite)
-            putExtra("emoji_file_size", emoji.fileSize)
-            putExtra("emoji_create_time", emoji.createTime)
-            putExtra("emoji_width", emoji.width)
-            putExtra("emoji_height", emoji.height)
+            putExtra(EmojiDetailActivity.EXTRA_EMOJI_ID, emoji.id)
         }
         startActivity(intent)
     }

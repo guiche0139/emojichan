@@ -13,7 +13,6 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.bitmap.CenterCrop
 import com.bumptech.glide.load.resource.bitmap.RoundedCorners
 import com.aris.emojichan.data.EmojiEntity
-import com.aris.emojichan.util.ImageUtil
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -63,7 +62,7 @@ class EmojiDetailActivity : AppCompatActivity() {
         setupButtons()
 
         if (emojiId == 0L) {
-            Toast.makeText(this, "表情不存在", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.detail_not_found), Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -126,17 +125,23 @@ class EmojiDetailActivity : AppCompatActivity() {
         val dateFormatted = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
             .format(Date(emoji.createTime))
         val sizeText = if (emoji.width > 0 && emoji.height > 0) {
-            " | 尺寸: ${emoji.width}×${emoji.height}"
+            getString(R.string.detail_size_suffix, emoji.width, emoji.height)
         } else {
             ""
         }
-        emojiInfo.text = "分类: ${emoji.category} | 大小: $fileSizeFormatted$sizeText | 添加于: $dateFormatted"
+        emojiInfo.text = getString(
+            R.string.detail_info,
+            emoji.category,
+            fileSizeFormatted,
+            sizeText,
+            dateFormatted
+        )
 
         updateFavoriteButton(emoji.isFavorite)
     }
 
     private fun updateFavoriteButton(isFavorite: Boolean) {
-        btnFavorite.text = if (isFavorite) "取消收藏" else "收藏"
+        btnFavorite.text = getString(if (isFavorite) R.string.btn_unfavorite else R.string.btn_favorite)
     }
 
     private fun setupButtons() {
@@ -152,12 +157,12 @@ class EmojiDetailActivity : AppCompatActivity() {
 
         btnDelete.setOnClickListener {
             MaterialAlertDialogBuilder(this)
-                .setTitle("删除确认")
-                .setMessage("确定要删除这个表情吗？")
-                .setPositiveButton("删除") { _, _ ->
+                .setTitle(R.string.delete_confirm_title)
+                .setMessage(R.string.delete_confirm_single_message)
+                .setPositiveButton(R.string.action_delete) { _, _ ->
                     deleteEmoji()
                 }
-                .setNegativeButton("取消", null)
+                .setNegativeButton(R.string.dialog_cancel, null)
                 .show()
         }
     }
@@ -169,26 +174,25 @@ class EmojiDetailActivity : AppCompatActivity() {
             setSelection(emoji.name.length)
         }
         MaterialAlertDialogBuilder(this)
-            .setTitle("重命名")
+            .setTitle(R.string.rename_title)
             .setView(input)
-            .setPositiveButton("确定") { _, _ ->
+            .setPositiveButton(R.string.dialog_ok) { _, _ ->
                 val newName = input.text.toString().trim()
                 when {
                     newName.isEmpty() ->
-                        Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.rename_name_empty), Toast.LENGTH_SHORT).show()
                     newName != emoji.name -> viewModel.renameEmoji(emoji.id, newName)
                 }
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(R.string.dialog_cancel, null)
             .show()
     }
 
     private fun deleteEmoji() {
         val emoji = currentEmoji ?: return
-        viewModel.deleteEmoji(emoji)
-        ImageUtil.deleteFile(emoji.filePath)
-        Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
-        finish()
+        // 不在页面里直接删文件：删除顺序（先文件、后记录）与失败处理统一由 ViewModel 负责。
+        // 删除成功后记录消失，observeEmoji 收到 null 会自动 finish()；失败则记录保留、仅弹提示。
+        viewModel.deleteEmoji(emoji.id)
     }
 
     private fun formatFileSize(bytes: Long): String {

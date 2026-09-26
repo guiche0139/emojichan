@@ -42,6 +42,8 @@ class EmojiRepository(context: Context) {
     suspend fun getFilePathsByIds(ids: List<Long>): List<String> =
         emojiDao.getFilePathsByIds(ids)
 
+    suspend fun getAllFilePaths(): List<String> = emojiDao.getAllFilePaths()
+
     /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     suspend fun rename(id: Long, newName: String): Int = emojiDao.rename(id, newName)
 
@@ -50,4 +52,18 @@ class EmojiRepository(context: Context) {
     /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     suspend fun updateFavorite(id: Long, isFavorite: Boolean): Int =
         emojiDao.updateFavorite(id, isFavorite)
+
+    // ---------- 分类管理 ----------
+
+    /** @return false 表示同名分类已存在。 */
+    suspend fun insertCategory(name: String): Boolean =
+        emojiDao.insertCategory(CategoryEntity(name = name)) != -1L
+
+    /** @return false 表示目标名已被占用，或原分类已不存在。 */
+    suspend fun renameCategory(oldName: String, newName: String): Boolean =
+        emojiDao.renameCategoryEverywhere(oldName, newName)
+
+    /** @return false 表示该分类不存在。分类下的表情改挂到 [fallbackCategory]，不会被删除。 */
+    suspend fun deleteCategory(name: String, fallbackCategory: String): Boolean =
+        emojiDao.deleteCategoryByName(name, fallbackCategory) > 0
 }

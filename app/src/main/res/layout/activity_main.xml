@@ -99,7 +99,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginHorizontal="4dp"
-            android:text="全选"
+            android:text="@string/btn_select_all"
             android:visibility="gone" />
 
         <Button
@@ -109,7 +109,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
-            android:text="取消"
+            android:text="@string/btn_cancel_select"
             android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>

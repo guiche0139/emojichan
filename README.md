@@ -7,7 +7,8 @@
 - **表情包网格展示** - 3列网格布局，清晰浏览所有表情包
 - **多格式导入** - 相册导入图片/GIF/PNG/WebP，自动保留原始格式
 - **实时搜索** - 支持按名称、标签、来源搜索，可限定在当前分类内
-- **分类管理** - 自定义分类，轻松整理
+- **分类筛选** - 顶部标签栏按分类聚合切换，可与搜索组合使用
+- **分类管理** - 新建 / 重命名 / 删除自定义分类，空分类也会保留
 - **收藏功能** - 常用表情一键收藏
 - **多选删除** - 批量删除多个表情包（自动清理本地文件）
 - **详情预览** - 大图预览，查看分类/大小/尺寸等详细信息，支持重命名
@@ -21,6 +22,8 @@
 - **图片加载**：Glide 4.16.0
 - **UI组件**：Material Design 1.11.0
 - **异步处理**：Coroutines 1.7.3
+- **依赖管理**：Gradle Version Catalog
+- **测试**：JUnit 4 + Robolectric 4.11.1 + Room in-memory
 
 ## 项目结构
 
@@ -30,16 +33,29 @@ app/src/main/java/com/aris/emojichan/
 ├── EmojiDetailActivity.kt   # 详情页
 ├── EmojiGridAdapter.kt      # 网格适配器
 ├── data/                    # 数据层
-│   ├── EmojiEntity.kt       # 实体类
+│   ├── EmojiEntity.kt       # 表情实体
+│   ├── CategoryEntity.kt    # 分类实体
 │   ├── EmojiDao.kt          # 数据访问
-│   ├── EmojiDatabase.kt     # 数据库
+│   ├── EmojiDatabase.kt     # 数据库（含 v1→v2 迁移）
 │   └── EmojiRepository.kt   # 数据仓库
 ├── viewmodel/               # ViewModel层
 │   └── EmojiViewModel.kt
 └── util/                    # 工具类
     ├── ImageUtil.kt
     └── PermissionUtil.kt
+
+app/src/test/java/com/aris/emojichan/data/
+└── EmojiDaoTest.kt          # 数据层回归测试（Robolectric + Room in-memory）
 ```
+
+## 开发文档
+
+项目开发文档（本地维护，不入库）：
+
+- [核心内容](核心内容.md) - 技术栈、目录结构、数据层/ViewModel/工具层/UI 层要点、开发红线，以及当前已实现的功能清单
+- [Bug清单](Bug清单.md) - 待解决的问题与优先级
+- [已修Bug](已修Bug.md) - 已修复问题的根因与修法记录
+- [日志](日志.md) - 按时间记录的开发与排查过程
 
 ## 安装说明
 
@@ -65,7 +81,8 @@ git clone https://github.com/guiche0139/emojichan.git
 
 1. **导入表情包** - 点击底部"导入"按钮，从相册选择图片
 2. **搜索** - 在顶部搜索框输入关键词
-3. **分类** - 点击标签切换不同分类
+3. **分类** - 点击标签切换不同分类；点击标签栏末尾的"＋ 管理"可新建、重命名、删除分类
+   - 删除分类时，该分类下的表情会移动到"默认"分类，不会丢失
 4. **收藏** - 点击星标图标收藏/取消收藏
 5. **删除** - 长按进入多选模式，选择后点击删除
 6. **查看** - 单击表情包查看大图和详细信息

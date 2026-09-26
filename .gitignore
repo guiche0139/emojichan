@@ -32,4 +32,11 @@ captures/
 
 # Project docs kept local only
 design.txt
+design/
+video/
+DEVELOP.md
 docs/
+
+# Publish staging folder + its sync script (local only)
+github/
+sync-github.ps1

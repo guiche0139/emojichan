@@ -38,6 +38,7 @@ video/
 Bug清单.md
 已修Bug.md
 日志.md
+插件系统.md
 
 # Publish staging folder + its sync script (local only)
 github/

@@ -21,7 +21,8 @@ class EmojiGridAdapter(
     private val onEmojiLongClick: (EmojiEntity) -> Unit,
     private val onFavoriteClick: (EmojiEntity) -> Unit,
     private val isSelectionMode: () -> Boolean,
-    private val selectedIds: () -> Set<Long>
+    private val selectedIds: () -> Set<Long>,
+    private val onCopyClick: (EmojiEntity) -> Unit
 ) : ListAdapter<EmojiEntity, EmojiGridAdapter.ViewHolder>(DiffCallback()) {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -29,6 +30,7 @@ class EmojiGridAdapter(
         val favoriteIcon: ImageView = view.findViewById(R.id.favoriteIcon)
         val checkBox: CheckBox = view.findViewById(R.id.checkBox)
         val emojiName: TextView = view.findViewById(R.id.emojiName)
+        val copyButton: TextView = view.findViewById(R.id.copyButton)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -61,6 +63,12 @@ class EmojiGridAdapter(
         val selectionMode = isSelectionMode()
         holder.checkBox.visibility = if (selectionMode) View.VISIBLE else View.GONE
         holder.checkBox.isChecked = selectedIds().contains(emoji.id)
+
+        // 复制按钮：多选模式下让位给勾选框
+        holder.copyButton.visibility = if (selectionMode) View.GONE else View.VISIBLE
+        holder.copyButton.setOnClickListener {
+            onCopyClick(emoji)
+        }
 
         // Click listeners
         holder.itemView.setOnClickListener {

@@ -29,6 +29,9 @@ class EmojiRepository(context: Context) {
 
     fun getCount(): Flow<Int> = emojiDao.getCount()
 
+    /** 最近发送过的表情，按使用时间倒序，最多 [limit] 条。 */
+    fun getRecentEmojis(limit: Int): Flow<List<EmojiEntity>> = emojiDao.getRecentEmojis(limit)
+
     suspend fun insert(emoji: EmojiEntity): Long = emojiDao.insert(emoji)
 
     suspend fun insertAll(emojis: List<EmojiEntity>) = emojiDao.insertAll(emojis)
@@ -52,6 +55,10 @@ class EmojiRepository(context: Context) {
     /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     suspend fun updateFavorite(id: Long, isFavorite: Boolean): Int =
         emojiDao.updateFavorite(id, isFavorite)
+
+    /** 记录一次发送：使用次数 +1、lastUsedTime 刷新为 [time]。 */
+    suspend fun recordUsage(id: Long, time: Long = System.currentTimeMillis()): Int =
+        emojiDao.recordUsage(id, time)
 
     // ---------- 分类管理 ----------
 

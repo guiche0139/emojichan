@@ -81,6 +81,20 @@ interface EmojiDao {
     @Query("SELECT COUNT(*) FROM emojis")
     fun getCount(): Flow<Int>
 
+    /**
+     * 最近用过的表情，供发送面板的「最近」分组使用。
+     *
+     * 过滤 lastUsedTime > 0 而不是按 usageCount：lastUsedTime 为 0 表示从未发送过，
+     * 这类记录按时间倒序排会全部堆在最前面（默认值 0 最小，反序后反而最靠后，
+     * 但语义上它们不该出现在「最近」里）。
+     */
+    @Query("SELECT * FROM emojis WHERE lastUsedTime > 0 ORDER BY lastUsedTime DESC LIMIT :limit")
+    fun getRecentEmojis(limit: Int): Flow<List<EmojiEntity>>
+
+    /** 记录一次发送：次数 +1、时间戳刷新。@return 实际更新的行数，0 表示该 id 已不存在。 */
+    @Query("UPDATE emojis SET usageCount = usageCount + 1, lastUsedTime = :time WHERE id = :id")
+    suspend fun recordUsage(id: Long, time: Long): Int
+
     // ---------- 分类管理 ----------
 
     /** @return 新行的 id；返回 -1 表示同名分类已存在（被 UNIQUE 索引挡下）。 */

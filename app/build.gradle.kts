@@ -12,8 +12,10 @@ android {
         applicationId = "com.aris.emojichan"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        // 版本号规则：0.1.N —— 每构建一版把 N 加一（0.1.210 → 0.1.211）。
+        // versionCode 跟 N 保持一致，装新版才能覆盖旧版；APK 文件名会带上 versionName。
+        versionCode = 215
+        versionName = "0.1.215"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -40,6 +42,15 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+        }
+    }
+
+    // 产物带上版本号：以前叫 app-debug.apk，每版都覆盖同名文件，根本分不清哪一版是新的。
+    applicationVariants.all {
+        val appVersion = versionName
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "emojichan-v" + appVersion + "-" + name + ".apk"
         }
     }
 }

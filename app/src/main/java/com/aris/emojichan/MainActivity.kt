@@ -3,8 +3,11 @@ package com.aris.emojichan
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -18,6 +21,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.data.EmojiEntity
+import com.aris.emojichan.sender.ChatProbeActivity
+import com.aris.emojichan.sender.AutoSendService
+import com.aris.emojichan.sender.EmojiShare
+import com.aris.emojichan.sender.FloatingBallService
 import com.aris.emojichan.util.ImageUtil
 import com.aris.emojichan.util.PermissionUtil
 import com.aris.emojichan.viewmodel.EmojiViewModel
@@ -27,6 +34,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import com.aris.emojichan.sender.SendLogActivity
+import com.aris.emojichan.sender.SenderPrefs
 
 /** 搜索防抖窗口：停止输入多久之后才真正查询数据库。 */
 private const val SEARCH_DEBOUNCE_MS = 250L
@@ -46,6 +55,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDelete: Button
     private lateinit var btnSelectAll: Button
     private lateinit var btnCancel: Button
+    private lateinit var senderStatus: TextView
+    private lateinit var senderLogLink: TextView
+    private lateinit var gifRoute: TextView
 
     private var currentCategoryChips: List<TextView> = emptyList()
 
@@ -87,6 +99,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun initViews() {
         toolbar = findViewById(R.id.toolbar)
+        // 标题栏副标题显示版本号，和 APK 文件名里的版本对得上，方便确认装的是哪一版。
+        toolbar.subtitle = "v" + runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        }.getOrDefault("?")
         searchBar = findViewById(R.id.searchBar)
         categoryContainer = findViewById(R.id.categoryContainer)
         emojiGrid = findViewById(R.id.emojiGrid)
@@ -96,10 +112,139 @@ class MainActivity : AppCompatActivity() {
         btnDelete = findViewById(R.id.btnDelete)
         btnSelectAll = findViewById(R.id.btnSelectAll)
         btnCancel = findViewById(R.id.btnCancel)
+        senderStatus = findViewById(R.id.senderStatus)
+        senderStatus.setOnClickListener { openAccessibilitySettings() }
+        senderLogLink = findViewById(R.id.senderLogLink)
+        senderLogLink.setOnClickListener {
+            startActivity(Intent(this, SendLogActivity::class.java))
+        }
+        gifRoute = findViewById(R.id.gifRoute)
+        gifRoute.setOnClickListener { toggleGifRoute() }
+    }
+
+    /**
+     * 状态条：无障碍服务开没开，直接决定两件事 —— 球是只在微信 / QQ 出现
+     * 还是一直赖在屏幕上；选完表情是自动选中聊天对象，还是把微信的选人界面
+     * 丢给用户自己点。这个开关藏在系统设置里，不摆出来用户就会以为功能坏了。
+     */
+    private fun refreshSenderStatus() {
+        val on = AutoSendService.isConnected
+        senderStatus.text = getString(
+            if (on) R.string.sender_status_on else R.string.sender_status_off
+        )
+        senderStatus.setTextColor(if (on) 0xFF2E7D32.toInt() else 0xFFC62828.toInt())
+    }
+
+    /**
+     * 微信动图走哪条路，摆出来让用户自己切。
+     *
+     * 两条路各有代价，而且哪条更好取决于微信自己的行为（分享通道保不保动画）——
+     * 那不是我能替用户决定的，摆一行正文、点一下就换，比发版快得多。
+     * 这一项只影响「微信里发动图」，静态图和 QQ 完全不受影响。
+     */
+    private fun refreshGifRoute() {
+        val album = SenderPrefs.wechatGifViaAlbum(this)
+        gifRoute.text = getString(if (album) R.string.gif_route_album else R.string.gif_route_share)
+    }
+
+    private fun toggleGifRoute() {
+        val album = !SenderPrefs.wechatGifViaAlbum(this)
+        SenderPrefs.setWechatGifViaAlbum(this, album)
+        refreshGifRoute()
+        Toast.makeText(
+            this,
+            if (album) R.string.gif_route_switched_album else R.string.gif_route_switched_share,
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun openAccessibilitySettings() {
+        if (AutoSendService.isConnected) return
+        runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            .onFailure {
+                Toast.makeText(
+                    this,
+                    R.string.sender_status_settings_unavailable,
+                    Toast.LENGTH_LONG
+                ).show()
+            }
     }
 
     private fun setupToolbar() {
         setSupportActionBar(toolbar)
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_main, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_send_overlay)?.setTitle(
+            if (FloatingBallService.isRunning) R.string.menu_send_overlay_on
+            else R.string.menu_send_overlay_off
+        )
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.action_send_overlay -> {
+                toggleSendOverlay()
+                true
+            }
+
+            R.id.action_sender_probe -> {
+                startActivity(Intent(this, ChatProbeActivity::class.java))
+                true
+            }
+
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    /** 用户在系统设置里授权后要接着把悬浮球开起来，免得回来还得再点一次菜单。 */
+    private var pendingOverlayStart = false
+
+    /**
+     * 菜单里的悬浮球开关。
+     *
+     * 只需要「显示在其他应用上层」这一个权限：不用无障碍，也就没有
+     * Android 13 那套「受限设置」引导。
+     */
+    private fun toggleSendOverlay() {
+        if (FloatingBallService.isRunning) {
+            FloatingBallService.stop(this)
+            Toast.makeText(this, R.string.overlay_stopped, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, R.string.overlay_permission_needed, Toast.LENGTH_LONG).show()
+            pendingOverlayStart = true
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:$packageName")
+            )
+            runCatching { startActivity(intent) }.onFailure {
+                pendingOverlayStart = false
+                Toast.makeText(
+                    this,
+                    R.string.overlay_permission_settings_unavailable,
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            return
+        }
+
+        FloatingBallService.start(this)
+        // 无障碍服务没开时球会一直在屏幕上，文案得说清楚差别，否则用户会以为坏了。
+        Toast.makeText(
+            this,
+            if (AutoSendService.isConnected) R.string.overlay_started
+            else R.string.overlay_started_manual,
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun setupSearchBar() {
@@ -280,6 +425,24 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * 「复制」按钮：把这张表情以图片剪贴板（content URI + 真实 mime）的形式放进系统剪贴板。
+     *
+     * 这一步和发送模块里静态图走的是同一条路（EmojiShare.copyToClipboard），
+     * 意义在于让用户自己去微信长按输入框「粘贴」——用来判定微信认不认 GIF 剪贴板，
+     * 也就是「0 点击 + 保动画」那条路线唯一的未知点。
+     */
+    private fun copyEmojiToClipboard(emoji: EmojiEntity) {
+        val kind = if (emoji.fileType.equals("gif", ignoreCase = true)) "动图 gif" else emoji.fileType
+        val ok = EmojiShare.copyToClipboard(this, emoji)
+        val text = if (ok) {
+            getString(R.string.copy_ok_toast, emoji.name, kind)
+        } else {
+            getString(R.string.copy_fail_toast)
+        }
+        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+    }
+
     private fun setupEmojiGrid() {
         adapter = EmojiGridAdapter(
             onEmojiClick = { emoji ->
@@ -300,7 +463,8 @@ class MainActivity : AppCompatActivity() {
                 viewModel.updateFavorite(emoji.id, !emoji.isFavorite)
             },
             isSelectionMode = { viewModel.isSelectionMode.value },
-            selectedIds = { viewModel.selectedIds.value }
+            selectedIds = { viewModel.selectedIds.value },
+            onCopyClick = { emoji -> copyEmojiToClipboard(emoji) }
         )
 
         emojiGrid.layoutManager = GridLayoutManager(this, 3)
@@ -420,5 +584,15 @@ class MainActivity : AppCompatActivity() {
         if (viewModel.isSelectionMode.value) {
             viewModel.toggleSelectionMode()
         }
+        if (pendingOverlayStart && Settings.canDrawOverlays(this)) {
+            pendingOverlayStart = false
+            FloatingBallService.start(this)
+            Toast.makeText(this, R.string.overlay_started, Toast.LENGTH_LONG).show()
+        }
+        // 无障碍服务可能刚在系统设置里被打开或关掉，回来时同步状态条。
+        refreshSenderStatus()
+        refreshGifRoute()
+        // 悬浮球开关状态可能在本界面不可见时变过，回来时刷新菜单标题。
+        invalidateOptionsMenu()
     }
 }

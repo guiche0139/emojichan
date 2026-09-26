@@ -14,6 +14,36 @@
         app:title="@string/app_name"
         app:titleTextColor="@android:color/white" />
 
+    <TextView
+        android:id="@+id/senderStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="10dp"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/senderLogLink"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="6dp"
+        android:paddingVertical="4dp"
+        android:textSize="13sp"
+        android:textColor="@color/primary"
+        android:text="@string/log_link" />
+
+    <TextView
+        android:id="@+id/gifRoute"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="6dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="4dp"
+        android:textSize="13sp"
+        android:textColor="@color/primary"
+        android:text="@string/gif_route_share" />
+
     <EditText
         android:id="@+id/searchBar"
         android:layout_width="match_parent"

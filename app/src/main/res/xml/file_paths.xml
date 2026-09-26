@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+      表情图片全部保存在 filesDir/emojis/ 下（见 ImageUtil.getEmojiDir）。
+      FileProvider 只会把这一棵树里的文件开放给收到授权的外部应用，
+      其余私有目录（数据库、缓存）不暴露。
+    -->
+    <files-path name="emojis" path="emojis/" />
+</paths>

@@ -39,7 +39,19 @@ Bug清单.md
 已修Bug.md
 日志.md
 插件系统.md
+表情发送模块.md
 
 # Publish staging folder + its sync script (local only)
 github/
 sync-github.ps1
+
+# Agent / 编辑器 / 构建临时产物（一律不入库）
+.tmpbuild/
+.gradlehome/
+.gradlenative/
+.dsh/
+.omo/
+.claude/
+.codex/
+.cursor/
+*.log

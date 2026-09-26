@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  「表情自动发送」无障碍服务配置。
+
+  它只做两件事，都不是持续性的：
+    1. 收「换页面」事件、只看 event.packageName，判断前台是不是微信 / QQ
+       —— 决定悬浮球显隐。这一步完全不读屏幕内容。
+    2. 用户点选表情后，各读一次界面：先读聊天页标题拿到「发给谁」，
+       再在微信的「选择聊天」列表里找同名项点掉。
+
+  刻意不写 android:packageNames：写了它，系统就只把微信 / QQ 的事件送过来，
+  我们反而永远收不到「切走」的那一刻 —— 球会赖在微信以外的界面上不消失。
+  这里只订阅 typeWindowStateChanged（一次界面切换才一条），每条只读一下
+  event.packageName，不碰节点树，所以放宽到全应用的开销可以忽略。
+  canPerformGestures=true 是为了在列表项本身不可点时用 dispatchGesture 兜底。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/auto_send_service_description"
+    android:notificationTimeout="50"
+    android:settingsActivity="com.aris.emojichan.sender.ChatProbeActivity" />

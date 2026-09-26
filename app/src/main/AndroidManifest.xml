@@ -3,6 +3,28 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!--
+      「显示在其他应用上层」，悬浮球必需。
+      它只能由用户在系统设置里手动打开（代码里用 Settings.canDrawOverlays 判断），
+      这里声明只是为了让本应用出现在那张设置页的列表里。
+      附带好处：持有该权限的应用不受 Android 10 起「后台启动 Activity」的限制，
+      因此点表情后能直接把微信拉起来。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!--
+      Android 11 起的包可见性：不声明这一段，本应用就「看不到」微信 ——
+      表现是只带 setPackage 的隐式分享 Intent 解析不到任何目标，直接抛
+      ActivityNotFoundException，于是每次都退化成系统分享面板（用户实测的现象）。
+      显式 ComponentName 不受这条限制，但组件名会随微信版本变，所以两头都要留着。
+    -->
+    <queries>
+        <package android:name="com.tencent.mm" />
+        <package android:name="com.tencent.mobileqq" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+    </queries>
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -18,5 +40,66 @@
             </intent-filter>
         </activity>
         <activity android:name=".EmojiDetailActivity" />
+        <activity
+            android:name=".sender.SendLogActivity"
+            android:exported="false"
+            android:label="@string/log_title" />
+        <activity
+            android:name=".sender.ChatProbeActivity"
+            android:label="@string/probe_title" />
+        <!--
+          探测用无障碍服务：由系统绑定、由用户手动开启，不是普通运行时权限。
+          android:label 会显示在系统「辅助功能」列表里开关的旁边。
+        -->
+        <service
+            android:name=".sender.ChatProbeService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+        <!--
+          场景感知 + 自动选中聊天对象用的无障碍服务。
+          和白名单一样由系统在分发阶段过滤，平时不监听、不读屏：
+          只在悬浮球被点开时读一次聊天页标题，分享后盯一小会儿「选择聊天」列表。
+        -->
+        <service
+            android:name=".sender.AutoSendService"
+            android:exported="true"
+            android:label="@string/auto_send_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_send_service_config" />
+        </service>
+        <!--
+          表情悬浮球。普通 Service 而非前台服务：不显示常驻通知。
+          用户离开本应用后窗口要留在屏幕上，所以不能在 Activity 里挂。
+        -->
+        <service
+            android:name=".sender.FloatingBallService"
+            android:exported="false" />
+        <!--
+          把 filesDir/emojis 下的图片以 content:// 形式分享给微信等外部应用。
+          exported=false + grantUriPermissions=true：只在随 Intent 发放授权时可读，
+          不做全局开放。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

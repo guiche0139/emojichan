@@ -12,6 +12,10 @@
 - **收藏功能** - 常用表情一键收藏
 - **多选删除** - 批量删除多个表情包（自动清理本地文件）
 - **详情预览** - 大图预览，查看分类/大小/尺寸等详细信息，支持重命名
+- **悬浮球快捷发送** - 屏幕上常驻一个悬浮球，点开选中表情即可发到微信 / QQ：静态图走剪贴板自动粘贴并发送，动图走系统分享（也可切到「＋ → 相册」以保留动画）
+- **自动选中聊天对象** - 发送前读一次当前聊天窗口的名字，在微信的「选择聊天」列表里自动选中同名的那一项；认不出来时只需自己点一下
+- **主界面复制到剪贴板** - 网格里每个表情右下角有「复制」按钮，可把图片（含 GIF）放进系统剪贴板，供任意应用粘贴
+- **发送日志** - 记录每次发送走了哪条路线、结果如何，出问题时可以直接复制出来
 
 ## 技术栈
 
@@ -40,9 +44,20 @@ app/src/main/java/com/aris/emojichan/
 │   └── EmojiRepository.kt   # 数据仓库
 ├── viewmodel/               # ViewModel层
 │   └── EmojiViewModel.kt
-└── util/                    # 工具类
-    ├── ImageUtil.kt
-    └── PermissionUtil.kt
+├── util/                    # 工具类
+│   ├── ImageUtil.kt
+│   └── PermissionUtil.kt
+└── sender/                  # 发送模块（悬浮球 / 无障碍 / 分享）
+    ├── FloatingBallService.kt   # 悬浮球窗口与表情面板
+    ├── SendPanelController.kt   # 面板视图控制
+    ├── AutoSendService.kt       # 无障碍服务：前台应用判定、读聊天标题、选中会话
+    ├── EmojiShare.kt            # 剪贴板 / 直接分享 / FileProvider
+    ├── AlbumPublish.kt          # 写入相册（动图走「＋ → 相册」时用）
+    ├── SenderPrefs.kt           # 发送模块的开关与设置
+    ├── SendLog.kt               # 发送日志写入
+    ├── SendLogActivity.kt       # 发送日志界面
+    └── ChatProbeService.kt      # 无障碍探测工具（排查用，见 ChatProbeActivity）
+    └── ProbeState.kt            # 探测数据缓存
 
 app/src/test/java/com/aris/emojichan/data/
 └── EmojiDaoTest.kt          # 数据层回归测试（Robolectric + Room in-memory）
@@ -50,13 +65,14 @@ app/src/test/java/com/aris/emojichan/data/
 
 ## 开发文档
 
-项目开发文档（本地维护，不入库）：
+项目开发文档（**本地维护，未入库**，因此下面的文件名在仓库里点不开）：
 
-- [核心内容](核心内容.md) - 技术栈、目录结构、数据层/ViewModel/工具层/UI 层要点、开发红线，以及当前已实现的功能清单
-- [Bug清单](Bug清单.md) - 待解决的问题（编号格式 `emc-<级别>-<序号>` 与优先级约定见文档头部）
-- [已修Bug](已修Bug.md) - 已修复问题的根因与修法记录，编号与 Bug清单 一致
-- [日志](日志.md) - 按时间记录的开发与排查过程
-- [插件系统](插件系统.md) - 插件化路线调研（编译期模块 / 独立 APK / 脚本沙箱 / 动态 dex）与待定问题
+- `核心内容.md` - 技术栈、目录结构、分层要点、开发红线与已实现功能清单
+- `Bug清单.md` - 待解决的问题（编号格式 `emc-<级别>-<序号>`）
+- `已修Bug.md` - 已修复问题的根因与修法记录，编号与 Bug清单 一致
+- `日志.md` - 按时间记录的开发与排查过程
+- `插件系统.md` - 插件化路线调研（编译期模块 / 独立 APK / 脚本沙箱 / 动态 dex）与待定问题
+- `表情发送模块.md` - 悬浮球发送模块的需求与决策、悬浮窗 / 无障碍约束、Android 13+ 受限设置、判定原理与实测记录
 
 ## 安装说明
 
@@ -93,6 +109,12 @@ git clone https://github.com/guiche0139/emojichan.git
 - Android Studio Hedgehog (2023.1) 或更高版本
 - JDK 17
 - Android SDK 34
+
+## 隐私说明
+
+- 本应用**没有申请联网权限**（清单里只有读相册、悬浮窗两条权限），所有表情、分类、日志都只存在本机。
+- 「表情自动发送」无障碍服务只在两个时机读取屏幕内容：① 判断前台应用是不是微信 / QQ；② 你点选表情后读一次聊天窗口标题。它不采集、不保存、不上传聊天内容。
+- 悬浮球需要「显示在其他应用上层」权限；Android 13 及以上如果开关是灰的，需要在系统设置的「受限设置」里允许本应用。
 
 ## 许可证
 

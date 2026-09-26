@@ -112,20 +112,33 @@ class EmojiDaoTest {
     }
 
     @Test
-    fun searchMatchesNameTagsAndSource() = runTest {
+    fun searchMatchesNameAndTagsOnly() = runTest {
         dao.insert(emoji("cat"))
         dao.insert(emoji("dog", tags = "cat-tag"))
         dao.insert(emoji("bird", source = "cat-source"))
         dao.insert(emoji("fish"))
 
-        assertEquals(3, dao.search("cat").first().size)
+        // bird 只有 source 含 "cat"，不该被搜出来
+        assertEquals(2, dao.search("cat").first().size)
         assertEquals(1, dao.search("fish").first().size)
     }
 
     @Test
+    fun searchIgnoresSourceColumn() = runTest {
+        // 名称里不能出现 a —— cat 本身就含 a，会让这个断言失去意义。
+        dao.insert(emoji("dog"))
+        dao.insert(emoji("bird"))
+        dao.insert(emoji("fish"))
+
+        // 三条记录的 source 都是默认的 "local"（含 a/l/o/c）。
+        // 若 source 参与 LIKE，这两个查询会把三条全部命中。
+        assertEquals(0, dao.search("a").first().size)
+        assertEquals(0, dao.search("local").first().size)
+    }
+
+    @Test
     fun favoritesAndCategoryFilters() = runTest {
-        // 查询词不要用单字母：source 默认值是 "local"，含 a / l / o / c，
-        // 搜这些字母会把所有本地表情一并命中。
+        // 单字母查询词曾是坑：source 恒为 "local" 且参与 LIKE，搜 a/l/o/c 会命中全部记录。
         dao.insert(emoji("red", category = "组1", isFavorite = true))
         dao.insert(emoji("blue", category = "组1"))
         dao.insert(emoji("green", category = "组2", isFavorite = true))

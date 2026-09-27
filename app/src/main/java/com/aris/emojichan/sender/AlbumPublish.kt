@@ -49,8 +49,21 @@ object AlbumPublish {
                 SendLog.d("相册", "插入系统相册失败：insert 返回 null")
                 null
             } else {
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    source.inputStream().use { input -> input.copyTo(out) }
+                // 写不进去时必须把这条记录删掉：留着一条 0 字节的 IS_PENDING 记录，
+                // 相册里会多出一张永远打不开的空图（emc-1-030）。
+                val out = context.contentResolver.openOutputStream(uri)
+                if (out == null) {
+                    SendLog.d("相册", "拿不到输出流，把刚插进去的那条记录删掉")
+                    context.contentResolver.delete(uri, null, null)
+                    return@runCatching null
+                }
+                val written: Long = out.use { target ->
+                    source.inputStream().use { input -> input.copyTo(target) }
+                }
+                if (written <= 0L) {
+                    SendLog.d("相册", "写出 0 字节，把刚插进去的那条记录删掉")
+                    context.contentResolver.delete(uri, null, null)
+                    return@runCatching null
                 }
                 context.contentResolver.update(
                     uri,
@@ -59,12 +72,33 @@ object AlbumPublish {
                     null
                 )
                 lastUri = uri
-                SendLog.d("相册", "已放进系统相册：" + name + "（" + mime + "）")
+                SendLog.d("相册", "已放进系统相册：" + name + "（" + mime + "，" + written + " 字节）")
                 uri
             }
         }.getOrElse { e ->
             SendLog.d("相册", "放进相册出错：" + e.javaClass.simpleName + "：" + (e.message?.take(80) ?: ""))
             null
+        }
+    }
+
+    /**
+     * 清理上次运行留下的临时图（emc-1-031）。
+     *
+     * [removeLast] 只记得住内存里的那一条：进程被系统杀掉时它没机会跑，相册里就会
+     * 一直躺着一张 emojichan_ 开头的图。这里按本应用专属的文件名前缀扫一遍删掉，
+     * 不会碰到用户自己的照片；Android 10 起应用也只能删自己贡献的那部分。
+     */
+    fun cleanStale(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        runCatching {
+            val deleted = context.contentResolver.delete(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                MediaStore.Images.Media.DISPLAY_NAME + " LIKE ?",
+                arrayOf(PREFIX + "%")
+            )
+            if (deleted > 0) SendLog.d("相册", "清理掉上次留下的 " + deleted + " 张临时图")
+        }.onFailure { e ->
+            SendLog.d("相册", "清理残留临时图失败：" + (e.message?.take(60) ?: e.javaClass.simpleName))
         }
     }
 

@@ -66,6 +66,20 @@ object SendLog {
         runCatching { writer.execute { append(sink, line) } }
     }
 
+    /**
+     * 把聊天对象名、输入框文字这类内容打码之后再写日志（emc-1-028）。
+     *
+     * 日志会落盘成 filesDir/send_log.txt：它会被系统云备份带走，也能被用户一键分享出去，
+     * 不该出现完整的联系人昵称或草稿正文。这里只留「稳定指纹 + 字数」——
+     * 指纹足以判断两处读到的是不是同一个名字（排查认错人时正是要看这个），
+     * 但读不出这个名字到底是什么，也不泄露首字。
+     */
+    fun mask(text: String?): String {
+        if (text.isNullOrEmpty()) return "（空）"
+        val fingerprint = Integer.toHexString(text.hashCode())
+        return "＊" + fingerprint + "（" + text.length + " 字）"
+    }
+
     private fun append(target: File, line: String) {
         runCatching {
             if (target.length() > MAX_FILE_BYTES) {

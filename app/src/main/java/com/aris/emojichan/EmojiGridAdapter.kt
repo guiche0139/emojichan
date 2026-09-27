@@ -63,6 +63,9 @@ class EmojiGridAdapter(
         val selectionMode = isSelectionMode()
         holder.checkBox.visibility = if (selectionMode) View.VISIBLE else View.GONE
         holder.checkBox.isChecked = selectedIds().contains(emoji.id)
+        // 直接点勾选框也要走「点了这一项」这条线：CheckBox 自己 clickable，
+        // 会把点击吞掉 —— 原来只把自己勾上，选中集合不更新，于是删掉的不是用户以为的那批（emc-1-020）。
+        holder.checkBox.setOnClickListener { onEmojiClick(emoji) }
 
         // 复制按钮：多选模式下让位给勾选框
         holder.copyButton.visibility = if (selectionMode) View.GONE else View.VISIBLE

@@ -3,13 +3,11 @@ package com.aris.emojichan.sender
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -18,6 +16,7 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiRepository
@@ -44,28 +43,45 @@ class FloatingBallService : Service() {
         private const val PREFS = "sender_overlay"
         private const val KEY_X = "ball_x"
         private const val KEY_Y = "ball_y"
-        private const val BALL_SIZE_DP = 56
+        /** 触摸余量：窗口比视觉直径大 2×这个值，小球也按得着。 */
+        private const val BALL_TOUCH_PAD_DP = 4
         private const val BALL_MARGIN_DP = 8
 
         /** 面板高度占屏幕的比例。 */
         private const val PANEL_HEIGHT_RATIO = 0.56f
 
-        /** 自己画的提示条停留多久：够看清一行失败原因，也不至于杵在微信上碍事。 */
-        private const val HINT_DURATION_MS = 8000L
+        /** 相册路线发完之后，再等这么久才把相册里那张临时图删掉（留够微信读文件的时间）。 */
+        private const val ALBUM_CLEANUP_DELAY_MS = 15000L
 
-        /** 提示条距屏幕底边的高度，躲开微信自己的输入框。 */
-        private const val HINT_BOTTOM_MARGIN_DP = 150
-
-    /** 相册路线发完之后，再等这么久才把相册里那张临时图删掉（留够微信读文件的时间）。 */
-    private const val ALBUM_CLEANUP_DELAY_MS = 15000L
+        /** 重挂窗口时把球吸到最近的边（改完大小用，见 snapBallToEdge）。 */
+        private const val EXTRA_SNAP_EDGE = "snap_edge"
 
         /** 供界面侧查询开关状态；进程被杀后随之复位，与窗口是否还在保持一致。 */
         @Volatile
         var isRunning: Boolean = false
             private set
 
-        fun start(context: Context) {
-            context.startService(Intent(context, FloatingBallService::class.java))
+        /** 正在跑的这一个实例：深浅色 / 主题色改了要照着它把球重画一遍。 */
+        @Volatile
+        private var instance: FloatingBallService? = null
+
+        /**
+         * 主题色或深浅色改了之后叫一声。
+         *
+         * 球（连同底色、描边）是按「挂上屏幕那一刻」的配置 inflate 的，颜色又是
+         * ?attr/colorSurface、?attr/colorPrimary 这类主题属性画出来的 —— 用户不手动
+         * 关开一次悬浮球，它就一直停在旧颜色上。这里只让已经在跑的实例重画，没在跑
+         * 就什么都不做。
+         */
+        fun refreshAppearance() {
+            val service = instance ?: return
+            service.handler.post { service.refreshBallAppearance() }
+        }
+
+        fun start(context: Context, snapToEdge: Boolean = false) {
+            val intent = Intent(context, FloatingBallService::class.java)
+            if (snapToEdge) intent.putExtra(EXTRA_SNAP_EDGE, true)
+            context.startService(intent)
         }
 
         fun stop(context: Context) {
@@ -81,17 +97,19 @@ class FloatingBallService : Service() {
 
     private var ballView: View? = null
     private var ballParams: WindowManager.LayoutParams? = null
+
+    /** 挂球时用的是不是深色配置；跟当前不一致就说明该重画一遍。 */
+    private var ballNight = false
     private var panelView: View? = null
     private var panelController: SendPanelController? = null
 
     /** 面板是在哪个应用里打开的（微信 / QQ）—— 分享要发给它。 */
     private var panelAppPackage: String? = null
 
-    /** 正在显示的提示条；同一时刻只留一条。 */
-    private var hintView: View? = null
+    /** 最近一条系统 Toast：新消息来了先把旧的收掉，免得排队弹半天。 */
+    private var toast: Toast? = null
 
     private val handler = Handler(Looper.getMainLooper())
-    private val hintDismisser = Runnable { dismissHint() }
 
     /**
      * 球只跟着「前台应用在不在微信 / QQ」走。
@@ -104,6 +122,7 @@ class FloatingBallService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        instance = this
         SendLog.init(this)
         SendLog.d("球", "悬浮球服务启动")
         windowManager = getSystemService(WindowManager::class.java)
@@ -116,15 +135,33 @@ class FloatingBallService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 系统按 START_STICKY 重建时不会再走 onCreate 之外的分支，这里兜底补挂窗口。
         if (ballView == null) showBall()
+        if (intent?.getBooleanExtra(EXTRA_SNAP_EDGE, false) == true) snapBallToEdge()
         return START_STICKY
+    }
+
+    /**
+     * 把球吸到最近的一侧边。改完大小后原来的贴边位置会跑偏、变大还可能顶出屏幕，
+     * 用户就得再手动摆一次，所以重挂窗口时顺手贴一次边；纵向位置保留，只保证不出屏。
+     */
+    private fun snapBallToEdge() {
+        val view = ballView ?: return
+        val params = ballParams ?: return
+        val (screenWidth, screenHeight) = screenSize()
+        val margin = dp(BALL_MARGIN_DP)
+        val centerX = params.x + params.width / 2
+        params.x = if (centerX <= screenWidth / 2) margin else screenWidth - params.width - margin
+        params.y = params.y.coerceIn(0, maxOf(0, screenHeight - params.height))
+        runCatching { windowManager.updateViewLayout(view, params) }
+        persistBallPosition(params)
     }
 
     override fun onDestroy() {
         isRunning = false
+        if (instance === this) instance = null
         AutoSendService.removeForegroundListener(foregroundListener)
         hidePanel()
-        dismissHint()
-        handler.removeCallbacks(hintDismisser)
+        toast?.cancel()
+        toast = null
         removeBall()
         scope.cancel()
         super.onDestroy()
@@ -135,16 +172,21 @@ class FloatingBallService : Service() {
     private fun showBall() {
         if (ballView != null) return
 
-        val themed = ContextThemeWrapper(this, R.style.Theme_EmojiChan)
+        val themed = com.aris.emojichan.UiPrefs.themedContext(this)
         val view = LayoutInflater.from(themed).inflate(R.layout.overlay_floating_ball, null)
 
-        val size = dp(BALL_SIZE_DP)
+        ballNight = com.aris.emojichan.UiPrefs.isNight(this)
+        applyBallStyle(view)
+
+        // 视觉直径是用户在「UI 设置」里挑的那个值，窗口再放宽 2×4dp 当触摸余量。
+        val size = dp(com.aris.emojichan.UiPrefs.ballSizeDp(this))
+        val touchSize = size + dp(BALL_TOUCH_PAD_DP)
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val (screenWidth, screenHeight) = screenSize()
 
         val params = WindowManager.LayoutParams(
-            size,
-            size,
+            touchSize,
+            touchSize,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             // 不抢焦点：否则悬浮球一挂上，微信里正在打字的输入法会被顶掉。
             // NOT_FOCUSABLE 本身已隐含 NOT_TOUCH_MODAL（球以外的触摸继续传给下层），
@@ -154,8 +196,13 @@ class FloatingBallService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = prefs.getInt(KEY_X, screenWidth - size - dp(BALL_MARGIN_DP))
+            // 恢复上次的位置，但一定要夹回当前屏幕范围内：
+            // 横竖屏一换、分辨率一变（或换了设备），旧坐标可能整颗球都在屏幕外，
+            // 那时球既看不见也点不到，用户只能去设置里关了再开（emc-1-024）。
+            x = prefs.getInt(KEY_X, screenWidth - touchSize - dp(BALL_MARGIN_DP))
+                .coerceIn(0, maxOf(0, screenWidth - touchSize))
             y = prefs.getInt(KEY_Y, screenHeight / 3)
+                .coerceIn(0, maxOf(0, screenHeight - touchSize))
         }
 
         attachBallTouch(view, params)
@@ -172,6 +219,61 @@ class FloatingBallService : Service() {
         }
         ballView = null
         ballParams = null
+    }
+
+    /**
+     * 球的三种长相：默认图案（布局里自带）、纯色表情球、用户自己挑的图。
+     * 自定义图不在（清了数据、换了手机）就退回默认图案，不给用户看一个空白球。
+     */
+    private fun applyBallStyle(view: View) {
+        val themed = com.aris.emojichan.UiPrefs.themedContext(this)
+        val image = view.findViewById<android.widget.ImageView>(R.id.floatingBallImage)
+        val icon = view.findViewById<android.widget.TextView>(R.id.floatingBallIcon)
+
+        // 底色和描边是主题属性（?attr/colorSurface、?attr/colorPrimary）画出来的，
+        // 所以每次都拿「当前」配置重新解析一遍：切深浅色、换主题色后球能自己变过来，
+        // 不用把窗口摘下来重挂。
+        image.background = androidx.core.content.ContextCompat
+            .getDrawable(themed, R.drawable.bg_floating_ball_photo)
+        icon.background = androidx.core.content.ContextCompat
+            .getDrawable(themed, R.drawable.bg_floating_ball)
+
+        when (com.aris.emojichan.UiPrefs.ballStyle(this)) {
+            com.aris.emojichan.UiPrefs.BALL_DOT -> {
+                image.visibility = View.GONE
+                icon.visibility = View.VISIBLE
+            }
+
+            com.aris.emojichan.UiPrefs.BALL_CUSTOM -> {
+                val file = com.aris.emojichan.UiPrefs.ballFile(this)
+                image.visibility = View.VISIBLE
+                icon.visibility = View.GONE
+                if (file.exists()) {
+                    // Glide 的磁盘缓存键只有「文件路径」这一个字符串（不含修改时间），
+                    // 而换自定义球图时覆盖的正是同一个 ball.png —— 不加 signature，
+                    // 用户换完图很可能还看到上一张（emc-1-027）。
+                    com.bumptech.glide.Glide.with(this)
+                        .load(file)
+                        .signature(com.bumptech.glide.signature.ObjectKey(file.lastModified()))
+                        .into(image)
+                } else {
+                    image.setImageResource(R.drawable.game)
+                }
+            }
+
+            else -> {
+                image.visibility = View.VISIBLE
+                icon.visibility = View.GONE
+                image.setImageResource(R.drawable.game)
+            }
+        }
+    }
+
+    /** 深浅色 / 主题色变了：位置不动，只按新配置把球重画一遍（不重挂窗口）。 */
+    private fun refreshBallAppearance() {
+        val view = ballView ?: return
+        ballNight = com.aris.emojichan.UiPrefs.isNight(this)
+        applyBallStyle(view)
     }
 
     private fun attachBallTouch(view: View, params: WindowManager.LayoutParams) {
@@ -244,7 +346,7 @@ class FloatingBallService : Service() {
         // 关闭面板时再恢复 —— 比调窗口层级简单，也不会闪。
         ballView?.visibility = View.GONE
 
-        val themed = ContextThemeWrapper(this, R.style.Theme_EmojiChan)
+        val themed = com.aris.emojichan.UiPrefs.themedContext(this)
         val view = LayoutInflater.from(themed).inflate(R.layout.overlay_send_panel, null)
 
         val (_, screenHeight) = screenSize()
@@ -304,6 +406,8 @@ class FloatingBallService : Service() {
      */
     private fun syncBallVisibility() {
         val view = ballView ?: return
+        // 「跟随系统」时系统的深浅色变了也要跟上；前台切应用时顺路查一次，几乎零开销。
+        if (com.aris.emojichan.UiPrefs.isNight(this) != ballNight) refreshBallAppearance()
         if (panelView != null) return
         val visible = !AutoSendService.isConnected || AutoSendService.foregroundPackage != null
         val next = if (visible) View.VISIBLE else View.GONE
@@ -330,12 +434,13 @@ class FloatingBallService : Service() {
         hidePanel()
 
         // 优先用「点发送这一刻」的前台应用；面板开着时前台仍是微信 / QQ 本身。
-        val appPackage = AutoSendService.foregroundPackage
-            ?: panelAppPackage
-            ?: AutoSendService.PACKAGE_WECHAT
+        // 两条都读不到时**不再兜底猜微信**（emc-1-026）：猜错的后果是把图塞进微信的选人页，
+        // 而用户这时可能根本不在微信里；null 会一路走到系统分享面板，由用户自己挑应用。
+        val appPackage = AutoSendService.foregroundPackage ?: panelAppPackage
         SendLog.d(
             "发送",
-            "选中表情 id=" + emoji.id + "，发给 " + appPackage + "，目标 = " + (title ?: "（空）")
+            "选中表情 id=" + emoji.id + "，发给 " + (appPackage ?: "（没认出前台应用）") +
+                "，目标 = " + SendLog.mask(title)
         )
 
         // 三条路，前两条是实测结论，第三条还等着真机验证：
@@ -351,17 +456,27 @@ class FloatingBallService : Service() {
         SendLog.d(
             "发送",
             "策略 = " + (
-                if (appPackage != AutoSendService.PACKAGE_WECHAT) "分享（QQ）"
+                if (appPackage == null) "分享（系统面板：没认出前台应用）"
+                else if (appPackage != AutoSendService.PACKAGE_WECHAT) "分享（QQ）"
                 else if (!animated) "粘贴（微信静态图）"
                 else if (albumRoute) "相册（微信动图）"
                 else "分享（微信动图）"
                 )
         )
         scope.launch {
+            if (appPackage == null) {
+                // 认不出前台应用就别动无障碍了：直接把选择权交给系统面板。
+                showHint(getString(R.string.overlay_unknown_app))
+                shareByIntent(emoji, null, title, allowInfoRead = false)
+                return@launch
+            }
             if (AutoSendService.isConnected && appPackage == AutoSendService.PACKAGE_WECHAT) {
                 if (!animated) {
                     if (EmojiShare.copyToClipboard(this@FloatingBallService, emoji)) {
-                        if (AutoSendService.pasteIntoChat()) {
+                        val pasted = AutoSendService.pasteIntoChat()
+                        // 不管粘成没粘成，这张图的临时读权限都该收回来了（emc-1-029）。
+                        EmojiShare.releaseClipboardGrants(this@FloatingBallService)
+                        if (pasted) {
                             showHint(getString(R.string.overlay_pasted))
                             return@launch
                         }
@@ -398,13 +513,14 @@ class FloatingBallService : Service() {
 
     /**
      * 第二条路：把图片交给微信自己的分享入口，再在它的「选择聊天」页里点出目标。
+     * [appPackage] 为 null 时（没认出前台应用）只把图交给系统分享面板，不替用户认人。
      * 目标名读不到时，这里才做最后那次「点开更多信息」的补读 —— 它会切一下页面，
      * 所以必须赶在分享之前做完。allowInfoRead = false 时跳过这最后一次补读
      * （微信动图那条路用得上：补读要翻两次页面，代价比让用户点一下更高）。
      */
     private suspend fun shareByIntent(
         emoji: EmojiEntity,
-        appPackage: String,
+        appPackage: String?,
         knownTarget: String?,
         allowInfoRead: Boolean = true
     ) {
@@ -423,6 +539,13 @@ class FloatingBallService : Service() {
             return
         }
         if (result == EmojiShare.Result.FileMissing || result == EmojiShare.Result.NoTarget) return
+
+        // 不知道目标应用时，后面「在选人页点掉同名项」就不能做：
+        // 系统分享面板上那一页未必是微信，点错就是点到别的东西（emc-1-026）。
+        if (appPackage == null) {
+            SendLog.d("发送", "不知道目标应用，不自动点选会话，交给用户自己挑")
+            return
+        }
 
         val name = target
         if (name.isNullOrEmpty()) {
@@ -445,52 +568,19 @@ class FloatingBallService : Service() {
     // ---------- 提示条 ----------
 
     /**
-     * 用悬浮窗自己画一条提示，而不是 Toast。
+     * 发完表情后的那句提示，走系统 Toast（用户要求：别再自己画一条悬浮提示）。
      *
-     * 这条链路上 Toast 恰恰是最不可靠的：发送时应用已经退到后台（前面是微信或系统
-     * 分享面板），MIUI 之类的 ROM 会把后台应用的 Toast 一起拦掉 —— 而这条提示正是
-     * 那时候唯一想知道的东西（用户实测：弹了系统分享面板，却什么也没提示）。
-     * 悬浮窗权限我们本来就有（球就挂在屏幕上），不受这个限制。
+     * 记一笔历史：这里原先是拿悬浮窗自己画的 —— 因为发送那一刻应用已经退到后台
+     * （前面是微信或系统分享面板），MIUI 这类 ROM 会把后台应用的 Toast 一并拦掉，
+     * 而那条提示正是当时唯一想知道的东西。改成系统 Toast 后，如果在微信里看不到
+     * 提示，多半就是被 ROM 拦了：原文永远写在日志「提示」那一行里，可回查。
      */
     private fun showHint(message: String) {
         SendLog.d("提示", message)
-        dismissHint()
-
-        val hint = TextView(this).apply {
-            text = message
-            textSize = 13f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0xE6000000.toInt())
-            val padding = dp(14)
-            setPadding(padding, dp(10), padding, dp(10))
-            // 异常消息可能很长，限宽让它在屏幕内换行，而不是横着冲出屏幕。
-            maxWidth = (resources.displayMetrics.widthPixels * 0.86f).toInt()
+        runCatching {
+            toast?.cancel()
+            toast = Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).also { it.show() }
         }
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            // 不抢焦点、也不吃触摸：提示条只给眼睛看，不该影响下面的微信。
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = dp(HINT_BOTTOM_MARGIN_DP)
-        }
-
-        runCatching { windowManager.addView(hint, params) }.onSuccess {
-            hintView = hint
-            handler.postDelayed(hintDismisser, HINT_DURATION_MS)
-        }
-    }
-
-    private fun dismissHint() {
-        val view = hintView ?: return
-        hintView = null
-        handler.removeCallbacks(hintDismisser)
-        runCatching { windowManager.removeView(view) }
     }
 
     // ---------- 杂项 ----------

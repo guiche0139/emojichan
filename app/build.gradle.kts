@@ -14,8 +14,8 @@ android {
         targetSdk = 34
         // 版本号规则：0.1.N —— 每构建一版把 N 加一（0.1.210 → 0.1.211）。
         // versionCode 跟 N 保持一致，装新版才能覆盖旧版；APK 文件名会带上 versionName。
-        versionCode = 215
-        versionName = "0.1.215"
+        versionCode = 305
+        versionName = "0.1.305"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色模式：只换父主题和状态栏/导航栏那两行开关，颜色槽位引用的是同一批名字
+      （palette_* 在 values-night/colors.xml 里已经换成深色版），所以主题色 overlay
+      在深色下照样有效。
+    -->
+    <style name="Theme.EmojiChan" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/palette_navy_primary</item>
+        <item name="colorOnPrimary">@color/palette_on_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_navy_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_navy_on_primary_container</item>
+
+        <item name="colorSecondary">@color/palette_navy_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_navy_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_navy_on_secondary_container</item>
+
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorSurfaceVariant">@color/surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/text_secondary</item>
+        <item name="colorSurfaceContainer">@color/surface_variant</item>
+        <item name="colorSurfaceContainerHigh">@color/surface_variant</item>
+        <item name="colorOutline">@color/divider</item>
+        <item name="colorOutlineVariant">@color/divider</item>
+        <item name="colorError">@color/danger</item>
+
+        <item name="colorAccent">@color/palette_navy_primary</item>
+        <item name="android:colorBackground">@color/background</item>
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

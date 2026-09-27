@@ -21,5 +21,4 @@
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
     android:description="@string/auto_send_service_description"
-    android:notificationTimeout="50"
-    android:settingsActivity="com.aris.emojichan.sender.ChatProbeActivity" />
+    android:notificationTimeout="50" />

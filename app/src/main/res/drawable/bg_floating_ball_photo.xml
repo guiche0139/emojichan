@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  悬浮球显示图片时的底：一个圆。刻意不画描边 —— clipToOutline 会把图裁进这个圆里，
+  描边会被图整个盖住，画了也是白画。
+  但图只占内圈：布局给 ImageView 留了 2dp padding，露出来的这 2dp 就是这里的底色，
+  所以它得跟着深浅色走（浅色白圈、深色深圈）。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorSurface" />
+</shape>

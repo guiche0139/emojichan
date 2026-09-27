@@ -34,6 +34,7 @@ captures/
 design.txt
 design/
 video/
+代码审计-*.md
 核心内容.md
 Bug清单.md
 已修Bug.md
@@ -46,6 +47,9 @@ github/
 sync-github.ps1
 
 # Agent / 编辑器 / 构建临时产物（一律不入库）
+.kotlin/
+app/release/
+*.hprof
 .tmpbuild/
 .gradlehome/
 .gradlenative/

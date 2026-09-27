@@ -55,6 +55,14 @@ class SendPanelController(
     private val list: RecyclerView = root.findViewById(R.id.sendPanelList)
     private val emptyView: TextView = root.findViewById(R.id.sendPanelEmpty)
     private val targetView: TextView = root.findViewById(R.id.sendPanelTarget)
+
+    /**
+     * 取颜色 / 尺寸用的上下文。
+     *
+     * host 是 [FloatingBallService]，Service 自己拿不到 AppCompat 的深色覆盖，
+     * 用它取 R.color.text_primary 永远得到浅色那套值 —— 深色模式下 chip 文字会看不清（emc-1-025）。
+     */
+    private val themed: Context = com.aris.emojichan.UiPrefs.themedContext(host)
     private val adapter = SendPanelAdapter(onPick)
 
     /**
@@ -187,7 +195,7 @@ class SendPanelController(
     private fun refreshChips() {
         chipViews.forEach { chip ->
             val selected = chip.text.toString() == current
-            chip.setTextColor(if (selected) Color.WHITE else host.getColor(R.color.text_primary))
+            chip.setTextColor(if (selected) Color.WHITE else themed.getColor(R.color.text_primary))
             chip.setBackgroundResource(
                 if (selected) R.drawable.category_chip_selected_bg
                 else R.drawable.category_chip_bg

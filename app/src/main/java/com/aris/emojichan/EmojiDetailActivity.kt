@@ -52,6 +52,8 @@ class EmojiDetailActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 主题色 / 深浅色跟主界面保持一致（overlay 必须在 setContentView 之前套）。
+        com.aris.emojichan.UiPrefs.applyTheme(this)
         setContentView(R.layout.activity_emoji_detail)
 
         viewModel = ViewModelProvider(this)[EmojiViewModel::class.java]

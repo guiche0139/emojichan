@@ -1,13 +1,83 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#FF6B6B</color>
-    <color name="primary_light">#FF8E8E</color>
-    <color name="primary_dark">#E55555</color>
-    <color name="secondary">#4ECDC4</color>
-    <color name="accent">#FFE66D</color>
-    <color name="background">#F8F9FA</color>
+    <!--
+      两套色：① 语义色（背景/卡片/文字/分隔线……），深浅色各一份，值直接写在
+      values/ 与 values-night/ 里，系统切深色就自动换；② 主题色调色板
+      （palette_<色>_primary 等 6 个），由 values/themes.xml 里的
+      ThemeOverlay.EmojiChan.<色> 挑一套套上去，运行时能换。
+      语义色保持名字不变（别的布局都在用），primary 那一组是默认主题色（深蓝）的别名。
+    -->
+    <color name="primary">@color/palette_navy_primary</color>
+    <color name="primary_light">#4A6FD0</color>
+    <color name="primary_dark">#16295E</color>
+    <color name="on_primary">@color/palette_on_primary</color>
+    <color name="primary_container">@color/palette_navy_primary_container</color>
+    <color name="on_primary_container">@color/palette_navy_on_primary_container</color>
+
+    <color name="secondary">@color/palette_navy_secondary</color>
+    <color name="secondary_container">@color/palette_navy_secondary_container</color>
+    <color name="on_secondary_container">@color/palette_navy_on_secondary_container</color>
+    <color name="accent">#FFD166</color>
+
+    <color name="background">#F5F6FA</color>
     <color name="surface">#FFFFFF</color>
-    <color name="text_primary">#2D3436</color>
-    <color name="text_secondary">#636E72</color>
-    <color name="divider">#E0E0E0</color>
+    <color name="surface_variant">#EEF0F7</color>
+    <color name="text_primary">#1B1D2A</color>
+    <color name="text_secondary">#6B7080</color>
+    <color name="divider">#E7E9F0</color>
+
+    <color name="success">#1FA971</color>
+    <color name="warning">#E8A33D</color>
+    <color name="warning_container">#FFF4E0</color>
+    <color name="on_warning_container">#7A551A</color>
+    <color name="danger">#E5484D</color>
+
+    <!-- 状态条（无障碍服务未开启时的那条提示） -->
+    <color name="status_on">#1FA971</color>
+    <color name="status_off">#D98324</color>
+
+    <!-- ==================== 主题色调色板（浅色） ==================== -->
+    <color name="palette_on_primary">#FFFFFF</color>
+
+    <color name="palette_navy_primary">#1E3A8A</color>
+    <color name="palette_navy_primary_container">#DCE6FA</color>
+    <color name="palette_navy_on_primary_container">#11224E</color>
+    <color name="palette_navy_secondary">#3D6FCB</color>
+    <color name="palette_navy_secondary_container">#DEEAFB</color>
+    <color name="palette_navy_on_secondary_container">#0E2A55</color>
+
+    <color name="palette_purple_primary">#6C5CE7</color>
+    <color name="palette_purple_primary_container">#EAE6FF</color>
+    <color name="palette_purple_on_primary_container">#241A5E</color>
+    <color name="palette_purple_secondary">#00B8A9</color>
+    <color name="palette_purple_secondary_container">#D7F6F2</color>
+    <color name="palette_purple_on_secondary_container">#00423C</color>
+
+    <color name="palette_blue_primary">#2F6FE4</color>
+    <color name="palette_blue_primary_container">#E2ECFF</color>
+    <color name="palette_blue_on_primary_container">#10265C</color>
+    <color name="palette_blue_secondary">#00A0C6</color>
+    <color name="palette_blue_secondary_container">#D5F2FA</color>
+    <color name="palette_blue_on_secondary_container">#00323F</color>
+
+    <color name="palette_green_primary">#1F9D6B</color>
+    <color name="palette_green_primary_container">#DDF5E9</color>
+    <color name="palette_green_on_primary_container">#0B3323</color>
+    <color name="palette_green_secondary">#64A62B</color>
+    <color name="palette_green_secondary_container">#EAF6D8</color>
+    <color name="palette_green_on_secondary_container">#23380A</color>
+
+    <color name="palette_orange_primary">#E07A2F</color>
+    <color name="palette_orange_primary_container">#FFEBD8</color>
+    <color name="palette_orange_on_primary_container">#4A2205</color>
+    <color name="palette_orange_secondary">#D98E00</color>
+    <color name="palette_orange_secondary_container">#FFF1D6</color>
+    <color name="palette_orange_on_secondary_container">#452C00</color>
+
+    <color name="palette_pink_primary">#E0508F</color>
+    <color name="palette_pink_primary_container">#FFE3EF</color>
+    <color name="palette_pink_on_primary_container">#4E0B29</color>
+    <color name="palette_pink_secondary">#B45BD8</color>
+    <color name="palette_pink_secondary_container">#F5E4FF</color>
+    <color name="palette_pink_on_secondary_container">#350F4A</color>
 </resources>

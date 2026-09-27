@@ -21,13 +21,13 @@ interface EmojiDao {
     fun getByCategory(category: String): Flow<List<EmojiEntity>>
 
     // 只按名称与标签匹配：source 目前恒为 "local"，参与 LIKE 会让搜 a/l/o/c 命中全部记录。
-    @Query("SELECT * FROM emojis WHERE name LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%' ORDER BY createTime DESC")
+    @Query("SELECT * FROM emojis WHERE name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\' ORDER BY createTime DESC")
     fun search(query: String): Flow<List<EmojiEntity>>
 
-    @Query("SELECT * FROM emojis WHERE isFavorite = 1 AND (name LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%') ORDER BY createTime DESC")
+    @Query("SELECT * FROM emojis WHERE isFavorite = 1 AND (name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\') ORDER BY createTime DESC")
     fun searchFavorites(query: String): Flow<List<EmojiEntity>>
 
-    @Query("SELECT * FROM emojis WHERE category = :category AND (name LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%') ORDER BY createTime DESC")
+    @Query("SELECT * FROM emojis WHERE category = :category AND (name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\') ORDER BY createTime DESC")
     fun searchInCategory(query: String, category: String): Flow<List<EmojiEntity>>
 
     /**

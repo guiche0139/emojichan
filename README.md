@@ -33,9 +33,11 @@
 
 ```
 app/src/main/java/com/aris/emojichan/
+├── EmojiChanApp.kt          # Application：深色模式与相册残留清理
 ├── MainActivity.kt          # 主界面
 ├── EmojiDetailActivity.kt   # 详情页
 ├── EmojiGridAdapter.kt      # 网格适配器
+├── UiPrefs.kt               # 外观偏好（深色模式 / 主题色 / 悬浮球样式）
 ├── data/                    # 数据层
 │   ├── EmojiEntity.kt       # 表情实体
 │   ├── CategoryEntity.kt    # 分类实体
@@ -45,19 +47,18 @@ app/src/main/java/com/aris/emojichan/
 ├── viewmodel/               # ViewModel层
 │   └── EmojiViewModel.kt
 ├── util/                    # 工具类
-│   ├── ImageUtil.kt
-│   └── PermissionUtil.kt
+│   └── ImageUtil.kt
 └── sender/                  # 发送模块（悬浮球 / 无障碍 / 分享）
     ├── FloatingBallService.kt   # 悬浮球窗口与表情面板
     ├── SendPanelController.kt   # 面板视图控制
     ├── AutoSendService.kt       # 无障碍服务：前台应用判定、读聊天标题、选中会话
     ├── EmojiShare.kt            # 剪贴板 / 直接分享 / FileProvider
+    ├── LoggingFileProvider.kt   # 带取图流水的 FileProvider（谁按什么类型来取）
     ├── AlbumPublish.kt          # 写入相册（动图走「＋ → 相册」时用）
+    ├── ClipForensics.kt         # 剪贴板取证（复制 / 粘贴出问题时看交出去了什么）
     ├── SenderPrefs.kt           # 发送模块的开关与设置
     ├── SendLog.kt               # 发送日志写入
-    ├── SendLogActivity.kt       # 发送日志界面
-    └── ChatProbeService.kt      # 无障碍探测工具（排查用，见 ChatProbeActivity）
-    └── ProbeState.kt            # 探测数据缓存
+    └── SendLogActivity.kt       # 发送日志界面
 
 app/src/test/java/com/aris/emojichan/data/
 └── EmojiDaoTest.kt          # 数据层回归测试（Robolectric + Room in-memory）
@@ -112,7 +113,7 @@ git clone https://github.com/guiche0139/emojichan.git
 
 ## 隐私说明
 
-- 本应用**没有申请联网权限**（清单里只有读相册、悬浮窗两条权限），所有表情、分类、日志都只存在本机。
+- 本应用**没有申请联网权限**，清单里只申请了「显示在其他应用上层」（悬浮球）一条权限；导入图片走系统自带的图片选择器，不需要读相册权限。所有表情、分类、日志都只存在本机。
 - 「表情自动发送」无障碍服务只在两个时机读取屏幕内容：① 判断前台应用是不是微信 / QQ；② 你点选表情后读一次聊天窗口标题。它不采集、不保存、不上传聊天内容。
 - 悬浮球需要「显示在其他应用上层」权限；Android 13 及以上如果开关是灰的，需要在系统设置的「受限设置」里允许本应用。
 

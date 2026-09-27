@@ -50,8 +50,10 @@ object EmojiShare {
     /**
      * @param appPackage 球是从哪个应用里点开的（微信 / QQ）—— 分享就发给它，
      *   否则在 QQ 里点表情会莫名其妙跳到微信的选人页。
+     *   null 表示前台是哪个应用都没读出来：这时不去猜（猜错的后果是把图塞进微信的选人页，
+     *   而用户当时可能根本不在微信里），直接用系统分享面板（emc-1-026）。
      */
-    fun send(context: Context, emoji: EmojiEntity, appPackage: String): Result {
+    fun send(context: Context, emoji: EmojiEntity, appPackage: String?): Result {
         val file = File(emoji.filePath)
         if (!file.exists()) {
             SendLog.d("分享", "图片文件不在了：" + emoji.filePath)
@@ -78,26 +80,29 @@ object EmojiShare {
         // 从 Service 启动 Activity 必须带 FLAG_ACTIVITY_NEW_TASK；
         // 同时本应用持有 SYSTEM_ALERT_WINDOW 且悬浮球可见，不受 Android 10 起
         // 「后台启动 Activity」的限制。
-        val targets = shareTargets(context, appPackage)
         val errors = mutableListOf<String>()
 
-        for (type in types) {
-            for (target in targets) {
-                val intent = buildSendIntent(uri, type).apply {
-                    if (target != null) component = target else setPackage(appPackage)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                val label = target?.flattenToShortString() ?: ("只给包名 " + appPackage)
-                try {
-                    context.startActivity(intent)
-                    SendLog.d("分享", "拉起成功：" + label + "（type=" + type + "）")
-                    return Result.SentToApp
-                } catch (e: Exception) {
-                    val reason = describe(e)
-                    SendLog.d("分享", "拉起失败：" + label + " type=" + type + " ⇒ " + reason)
-                    if (reason !in errors) errors += reason
+        if (appPackage != null) {
+            for (type in types) {
+                for (target in shareTargets(context, appPackage)) {
+                    val intent = buildSendIntent(uri, type).apply {
+                        if (target != null) component = target else setPackage(appPackage)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    val label = target?.flattenToShortString() ?: ("只给包名 " + appPackage)
+                    try {
+                        context.startActivity(intent)
+                        SendLog.d("分享", "拉起成功：" + label + "（type=" + type + "）")
+                        return Result.SentToApp
+                    } catch (e: Exception) {
+                        val reason = describe(e)
+                        SendLog.d("分享", "拉起失败：" + label + " type=" + type + " ⇒ " + reason)
+                        if (reason !in errors) errors += reason
+                    }
                 }
             }
+        } else {
+            SendLog.d("分享", "不知道前台是哪个应用，直接走系统分享面板")
         }
 
         // 微信没装 / 被系统拦下 —— 退回系统分享面板，把每次尝试的原因一并带回去。
@@ -105,7 +110,7 @@ object EmojiShare {
             buildSendIntent(uri, types.last()),
             context.getString(R.string.overlay_chooser_title)
         ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-        SendLog.d("分享", "微信没拉起，退系统分享面板。之前的失败：" + errors.joinToString(" ｜ "))
+        SendLog.d("分享", "直达没成，退系统分享面板。之前的失败：" + errors.joinToString(" ｜ "))
         if (start(context, chooser)) {
             val detail = errors.joinToString(" ｜ ").take(220)
             return Result.ShowedChooser(if (detail.isEmpty()) null else detail)
@@ -138,17 +143,23 @@ object EmojiShare {
             // ClipData.Item 的 text 是只读的，只能在构造时就写成 empty，不能事后改。
             val type = context.contentResolver.getType(uri) ?: "image/*"
             val clip = ClipData("emoji", arrayOf(type), ClipData.Item("", null as String?, null as Intent?, uri))
+            // 上一份剪贴板已经不在系统里了，它换来的读权限先收回，再给这一份授权（emc-1-029）。
+            releaseClipboardGrants(context)
             // 粘贴方是微信 / QQ，把读权限明确授出去，别指望系统自动给。
             for (pkg in CLIP_TARGETS) {
                 runCatching {
                     context.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
             }
+            grantedUri = uri
             val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             manager.setPrimaryClip(clip)
             val desc = clip.description
             val mime = if (desc.mimeTypeCount > 0) desc.getMimeType(0) else "未知"
             SendLog.d("剪贴板", "已放入 " + file.name + "（type=" + mime + "）")
+            // 取证：写进去之后马上把三处现场记下来（文件字节 / 系统剪贴板 / 接收方能取到什么），
+            // 粘贴失败时一眼能看出断在哪一环。要读整个文件，所以丢到后台线程。
+            ClipForensics.reportAsync(context, file, uri)
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -159,6 +170,27 @@ object EmojiShare {
 
     /** 剪贴板要给谁授权：装了的微信 / QQ。 */
     private val CLIP_TARGETS = listOf(WECHAT_PACKAGE, QQ_PACKAGE)
+
+    /** 上一次放进剪贴板时授出去的那条 uri；粘贴结束或再次复制时要收回来（emc-1-029）。 */
+    @Volatile
+    private var grantedUri: Uri? = null
+
+    /**
+     * 撤回 [copyToClipboard] 授出去的读权限。
+     *
+     * 以前只授不收：这条 uri 的读权限会一直挂到应用进程结束，等于把一张表情图长期对外开放。
+     * 粘贴流程走完（成功或失败）后由调用方调一次；下一次复制也会顺带收回上一份。
+     */
+    fun releaseClipboardGrants(context: Context) {
+        val uri = grantedUri ?: return
+        grantedUri = null
+        for (pkg in CLIP_TARGETS) {
+            runCatching {
+                context.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+        SendLog.d("剪贴板", "已收回上一次的临时读权限")
+    }
 
     /**
      * 尝试启动微信的三条路，越具体的越先试：

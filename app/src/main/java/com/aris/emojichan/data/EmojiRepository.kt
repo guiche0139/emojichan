@@ -13,13 +13,25 @@ class EmojiRepository(context: Context) {
     fun getByCategory(category: String): Flow<List<EmojiEntity>> =
         emojiDao.getByCategory(category)
 
-    fun search(query: String): Flow<List<EmojiEntity>> = emojiDao.search(query)
+    fun search(query: String): Flow<List<EmojiEntity>> = emojiDao.search(escapeLike(query))
 
     fun searchFavorites(query: String): Flow<List<EmojiEntity>> =
-        emojiDao.searchFavorites(query)
+        emojiDao.searchFavorites(escapeLike(query))
 
     fun searchInCategory(query: String, category: String): Flow<List<EmojiEntity>> =
-        emojiDao.searchInCategory(query, category)
+        emojiDao.searchInCategory(escapeLike(query), category)
+
+    /**
+     * 把用户输入里的 LIKE 通配符转义掉（emc-1-035）。
+     *
+     * 参数一直是绑定的、没有注入问题；问题是「%」和「_」在 LIKE 里是通配符 ——
+     * 搜一个「%」会把全部记录都捞出来，看起来像搜索没生效。反斜杠要先转，
+     * 否则会把后面补的转义符再转一遍。
+     */
+    private fun escapeLike(query: String): String = query
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
 
     fun observeById(id: Long): Flow<EmojiEntity?> = emojiDao.observeById(id)
 

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色模式下的同一批颜色名。语义色全部压暗、文字提亮；调色板的主色换成
+      中等亮度的版本（白字仍然看得清），容器色压成深底 + 浅字。
+    -->
+    <color name="primary_light">#8FA9EE</color>
+    <color name="primary_dark">#4666C0</color>
+
+    <color name="background">#111218</color>
+    <color name="surface">#1A1C24</color>
+    <color name="surface_variant">#23252F</color>
+    <color name="text_primary">#ECEDF3</color>
+    <color name="text_secondary">#A0A4B8</color>
+    <color name="divider">#32343F</color>
+
+    <color name="accent">#FFD166</color>
+    <color name="warning_container">#3A2E15</color>
+    <color name="on_warning_container">#F0CE93</color>
+    <color name="danger">#FF6B6F</color>
+    <color name="success">#5BD3A0</color>
+    <color name="warning">#E9B968</color>
+    <color name="status_on">#5BD3A0</color>
+    <color name="status_off">#E9B968</color>
+
+    <color name="palette_on_primary">#FFFFFF</color>
+
+    <color name="palette_navy_primary">#5C7FE0</color>
+    <color name="palette_navy_primary_container">#1B2647</color>
+    <color name="palette_navy_on_primary_container">#D3DDFF</color>
+    <color name="palette_navy_secondary">#6D8FE8</color>
+    <color name="palette_navy_secondary_container">#1A2A4C</color>
+    <color name="palette_navy_on_secondary_container">#D5E1FF</color>
+
+    <color name="palette_purple_primary">#7C6AE8</color>
+    <color name="palette_purple_primary_container">#2A2350</color>
+    <color name="palette_purple_on_primary_container">#DCD6FF</color>
+    <color name="palette_purple_secondary">#2FB3A6</color>
+    <color name="palette_purple_secondary_container">#173B38</color>
+    <color name="palette_purple_on_secondary_container">#B7EFE9</color>
+
+    <color name="palette_blue_primary">#4A7FE0</color>
+    <color name="palette_blue_primary_container">#1E2B4D</color>
+    <color name="palette_blue_on_primary_container">#D3E1FF</color>
+    <color name="palette_blue_secondary">#3AAFC4</color>
+    <color name="palette_blue_secondary_container">#153A42</color>
+    <color name="palette_blue_on_secondary_container">#B6ECF4</color>
+
+    <color name="palette_green_primary">#2FA97C</color>
+    <color name="palette_green_primary_container">#15382B</color>
+    <color name="palette_green_on_primary_container">#CDEFE0</color>
+    <color name="palette_green_secondary">#6FAF3C</color>
+    <color name="palette_green_secondary_container">#23391C</color>
+    <color name="palette_green_on_secondary_container">#D6EFCF</color>
+
+    <color name="palette_orange_primary">#DB8546</color>
+    <color name="palette_orange_primary_container">#402A17</color>
+    <color name="palette_orange_on_primary_container">#FFDCC2</color>
+    <color name="palette_orange_secondary">#C98A2A</color>
+    <color name="palette_orange_secondary_container">#3C2D12</color>
+    <color name="palette_orange_on_secondary_container">#F6DCA9</color>
+
+    <color name="palette_pink_primary">#DE5C97</color>
+    <color name="palette_pink_primary_container">#3D1B2C</color>
+    <color name="palette_pink_on_primary_container">#FFD6E6</color>
+    <color name="palette_pink_secondary">#B06FD8</color>
+    <color name="palette_pink_secondary_container">#2E1B45</color>
+    <color name="palette_pink_on_secondary_container">#E6D2FF</color>
+</resources>

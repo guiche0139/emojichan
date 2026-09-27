@@ -3,55 +3,65 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/background">
+    android:background="@color/background"
+    android:orientation="vertical">
 
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="@color/primary"
-        app:navigationIcon="@android:drawable/ic_menu_revert"
-        app:title="表情详情"
-        app:titleTextColor="@android:color/white" />
+        android:background="@android:color/transparent"
+        android:paddingTop="4dp"
+        app:elevation="0dp"
+        app:navigationIcon="@drawable/ic_back"
+        app:navigationIconTint="@color/text_primary"
+        app:title="@string/detail_title"
+        app:titleTextColor="@color/text_primary" />
 
-    <FrameLayout
+    <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="4dp"
         android:layout_weight="1"
-        android:gravity="center">
+        app:cardBackgroundColor="@color/surface"
+        app:cardCornerRadius="18dp"
+        app:cardElevation="0dp"
+        app:strokeColor="@color/divider"
+        app:strokeWidth="1dp">
 
         <ImageView
             android:id="@+id/emojiImageView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_gravity="center"
             android:adjustViewBounds="true"
-            android:scaleType="fitCenter"
-            android:padding="16dp" />
-    </FrameLayout>
+            android:padding="12dp"
+            android:scaleType="fitCenter" />
+    </com.google.android.material.card.MaterialCardView>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingHorizontal="20dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="16dp">
 
         <TextView
             android:id="@+id/emojiName"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textColor="@color/text_primary"
-            android:textSize="18sp"
+            android:textSize="20sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/emojiInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:textColor="@color/text_secondary"
-            android:textSize="14sp" />
+            android:textSize="13sp" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -59,30 +69,41 @@
             android:layout_marginTop="16dp"
             android:orientation="horizontal">
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnFavorite"
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
                 android:layout_weight="1"
-                android:layout_marginEnd="8dp" />
+                android:minHeight="44dp"
+                android:textSize="13sp"
+                app:cornerRadius="14dp" />
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnRename"
-                style="@style/Widget.Material3.Button.OutlinedButton"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:layout_marginHorizontal="4dp"
-                android:text="@string/btn_rename" />
+                android:layout_weight="1"
+                android:minHeight="44dp"
+                android:text="@string/btn_rename"
+                android:textSize="13sp"
+                app:cornerRadius="14dp" />
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnDelete"
-                style="@style/Widget.Material3.Button.OutlinedButton"
+                style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:text="@string/btn_delete" />
+                android:minHeight="44dp"
+                android:text="@string/btn_delete"
+                android:textColor="@color/danger"
+                android:textSize="13sp"
+                app:cornerRadius="14dp" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

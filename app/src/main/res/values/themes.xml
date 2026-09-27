@@ -1,10 +1,116 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      Material3 浅色主题：把主要颜色槽位都显式指定，免得各控件（Chip / Switch /
+      底部导航）用默认的紫色系、跟品牌色打架。状态栏改成跟背景同色 + 深色图标，
+      标题栏就不再是一条色块，而是页面的一部分。
+      颜色槽位引用的是 palette_* 调色板 —— 换主题色就是换一套 overlay（见文件末尾），
+      深色模式则由 values-night/ 里的同名资源接管。
+    -->
     <style name="Theme.EmojiChan" parent="Theme.Material3.Light.NoActionBar">
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorPrimaryDark">@color/primary_dark</item>
-        <item name="colorAccent">@color/accent</item>
+        <item name="colorPrimary">@color/palette_navy_primary</item>
+        <item name="colorOnPrimary">@color/palette_on_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_navy_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_navy_on_primary_container</item>
+
+        <item name="colorSecondary">@color/palette_navy_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_navy_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_navy_on_secondary_container</item>
+
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorSurfaceVariant">@color/surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/text_secondary</item>
+        <item name="colorSurfaceContainer">@color/surface_variant</item>
+        <item name="colorSurfaceContainerHigh">@color/surface_variant</item>
+        <item name="colorOutline">@color/divider</item>
+        <item name="colorOutlineVariant">@color/divider</item>
+        <item name="colorError">@color/danger</item>
+
+        <item name="colorAccent">@color/palette_navy_primary</item>
+        <item name="android:colorBackground">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
-        <item name="android:statusBarColor">@color/primary</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- ==================== 主题色 ====================
+         每套只覆盖「主色 + 次色」两组槽位，其余槽位（背景/卡片/文字/分隔线）
+         各主题共用。加一套新主题色 = 在 colors.xml + values-night/colors.xml 里
+         各加 6 个 palette_ 颜色 + 在下面加一个 overlay + 在 UiPrefs.THEMES 里登记。
+    -->
+    <style name="ThemeOverlay.EmojiChan.Navy" parent="">
+        <item name="colorPrimary">@color/palette_navy_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_navy_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_navy_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_navy_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_navy_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_navy_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_navy_primary</item>
+    </style>
+
+    <style name="ThemeOverlay.EmojiChan.Purple" parent="">
+        <item name="colorPrimary">@color/palette_purple_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_purple_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_purple_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_purple_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_purple_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_purple_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_purple_primary</item>
+    </style>
+
+    <style name="ThemeOverlay.EmojiChan.Blue" parent="">
+        <item name="colorPrimary">@color/palette_blue_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_blue_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_blue_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_blue_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_blue_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_blue_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_blue_primary</item>
+    </style>
+
+    <style name="ThemeOverlay.EmojiChan.Green" parent="">
+        <item name="colorPrimary">@color/palette_green_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_green_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_green_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_green_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_green_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_green_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_green_primary</item>
+    </style>
+
+    <style name="ThemeOverlay.EmojiChan.Orange" parent="">
+        <item name="colorPrimary">@color/palette_orange_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_orange_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_orange_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_orange_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_orange_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_orange_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_orange_primary</item>
+    </style>
+
+    <style name="ThemeOverlay.EmojiChan.Pink" parent="">
+        <item name="colorPrimary">@color/palette_pink_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_pink_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_pink_on_primary_container</item>
+        <item name="colorSecondary">@color/palette_pink_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_pink_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_pink_on_secondary_container</item>
+        <item name="colorAccent">@color/palette_pink_primary</item>
+    </style>
+
+    <!-- 大标题（主界面顶部）：标题直接落在页面背景上 -->
+    <style name="TextAppearance.EmojiChan.Title" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.EmojiChan.Subtitle" parent="TextAppearance.Material3.LabelMedium">
+        <item name="android:textColor">@color/text_secondary</item>
+    </style>
+    <style name="EmojiChan.SectionLabel" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:letterSpacing">0.06</item>
     </style>
 </resources>

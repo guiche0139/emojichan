@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="@color/surface" />
+    <!-- 用主题属性而不是固定色值：深色换底、换主题色换边，都是自动的。 -->
+    <solid android:color="?attr/colorSurface" />
     <stroke
         android:width="1.5dp"
-        android:color="@color/primary" />
+        android:color="?attr/colorPrimary" />
 </shape>

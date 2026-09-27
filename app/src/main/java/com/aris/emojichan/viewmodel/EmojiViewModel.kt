@@ -139,14 +139,28 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun insertEmoji(emoji: EmojiEntity) {
-        viewModelScope.launch {
-            repository.insert(emoji)
+        // 写库失败（磁盘满、约束冲突）必须自己接住：裸 launch 里抛出的异常
+        // 会直接走到默认异常处理器上，把整个应用崩掉（emc-1-022）。
+        viewModelScope.launch(handler) {
+            try {
+                repository.insert(emoji)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _message.value =
+                    str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
+            }
         }
     }
 
     fun insertAll(emojis: List<EmojiEntity>) {
-        viewModelScope.launch {
-            repository.insertAll(emojis)
+        viewModelScope.launch(handler) {
+            try {
+                repository.insertAll(emojis)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _message.value =
+                    str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
+            }
         }
     }
 

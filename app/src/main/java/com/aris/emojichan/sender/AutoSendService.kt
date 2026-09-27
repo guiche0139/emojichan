@@ -13,13 +13,14 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 「表情自动发送」无障碍服务。
  *
- * 与 [ChatProbeService]（探测器）的关键区别：这个服务**平时什么都不做**。
+ * 与「页面探测」那套开发期工具（只在 debug 包里）的关键区别：这个服务**平时什么都不做**。
  * 它订阅的事件只有「换页面」，处理时只读事件里的包名，不碰界面内容，
  * 因此不会像探测器那样持续占用微信的 UI 线程。
  * 真正读界面只发生在两个时刻，各一次：
@@ -41,8 +42,12 @@ class AutoSendService : AccessibilityService() {
 
         private const val EDIT_TEXT_CLASS = "android.widget.EditText"
 
-        /** 轮询「选择聊天」列表的间隔。 */
-        private const val POLL_INTERVAL_MS = 250L
+        /**
+         * 轮询「选择聊天」列表的间隔。
+         * 每轮都要把整棵无障碍树深遍历一遍（节点数据由微信进程提供，全是跨进程调用），
+         * 250ms 一次会明显拖慢它 —— 放宽到 600ms，15 秒超时内仍有约 25 轮（emc-1-016）。
+         */
+        private const val POLL_INTERVAL_MS = 600L
         private const val DEFAULT_CLICK_TIMEOUT_MS = 8000L
 
         /**
@@ -56,8 +61,15 @@ class AutoSendService : AccessibilityService() {
         /** 聊天页判据：输入框必须落在屏幕这个比例以下（可排除微信首页顶部的搜索框）。 */
         private const val INPUT_TOP_RATIO = 0.45f
 
-        /** 标题只在这个比例以上的区域里找。 */
-        private const val TITLE_ZONE_RATIO = 0.18f
+        /**
+         * 标题只在这个比例以上的区域里找。
+         * 不能太大：聊天页标题栏底边大约在屏高 9% 处，0.18 一直盖到消息列表头一两屏，
+         * 会把消息正文当成聊天对象名（emc-1-017）。配合「可滑动容器里的节点不算」一起用。
+         */
+        private const val TITLE_ZONE_RATIO = 0.12f
+
+        /** 形如「21:03」的消息时间标签。 */
+        private val TIME_ONLY = Regex("^\\d{1,2}:\\d{2}$")
 
         /** 标题候选不能偏到右侧这个比例以外 —— 那里是「…」「Q我吧」这类按钮，不是聊天对象名。 */
         private const val TITLE_MAX_CENTER_RATIO = 0.72f
@@ -73,8 +85,25 @@ class AutoSendService : AccessibilityService() {
         private const val CONFIRM_SEND_TEXT = "发送"
         private const val CONFIRM_CANCEL_TEXT = "取消"
 
-        /** 候选名里带这些字符，才允许用「列表名是候选名的子串」这条兜底匹配。 */
-        private const val CONTAINED_SEPARATORS = "，,、：: （("
+        /** 「发送给：X」确认框标题的前缀。正文里随便出现这三个字不算（emc-0-005）。 */
+        private const val MARKER_SEND_TO = "发送给"
+
+        /** 屏幕这个比例以下属于聊天页输入栏那条带子，那里的「发送」绝不能碰。 */
+        private const val INPUT_BAR_GUARD_RATIO = 0.82f
+
+        /**
+         * 候选名里带这些字符，才允许走三级兜底匹配。
+         * 这里**不含空格** —— 名字里出现一个空格就开启兜底，风险远大于收益（emc-0-004）。
+         */
+        private const val CONTAINED_SEPARATORS = "，,、：:（("
+
+        /**
+         * 兜底匹配时，候选名里除名字以外剩下的部分只允许是这些固定装饰文案。
+         * 微信聊天页的标题会读成「岩星，点击进入聊天信息」这种形状，名字后面挂的就是它。
+         */
+        private val CONTAINED_DECORATIONS = setOf(
+            "点击进入聊天信息", "点击进入", "聊天信息", "更多信息", "详情", "点击查看"
+        )
 
         /**
          * 微信给消息气泡的无障碍文案，绝不是人名。
@@ -174,7 +203,36 @@ class AutoSendService : AccessibilityService() {
          * 由后台线程调用则是阻塞的，所以调用方应保证在主线程上。
          */
         fun readChatTitle(): String? = instance?.let { service ->
-            runCatching { service.doReadChatTitle() }.getOrNull()
+            runCatching { service.doReadChatTitle() }
+                .onFailure { logFailure("读聊天页标题", it) }
+                .getOrNull()
+        }
+
+        /**
+         * 这些入口把异常吞掉是**故意的**：无障碍服务可能已经被系统断连，
+         * 抛到调用方只会把悬浮窗那条链路一起带崩。但以前吞得一点痕迹不留，
+         * 用户报「点了没反应」时日志里什么也看不到（emc-1-038）—— 所以至少记一行。
+         */
+        private fun logFailure(what: String, e: Throwable) {
+            SendLog.d("自动发送", what + "出错：" + (e.message?.take(80) ?: e.javaClass.simpleName))
+        }
+
+        /**
+         * 串行化闸门：整套自动化（读标题 / 粘贴 / 相册路线 / 点会话）共用一把锁。
+         * 这些都是「一次性的界面操作」，内部全是 delay() 挂起点（最长 15 秒轮询），
+         * 任意两条交错都会让匹配与点击落在被对方改过的页面上（emc-0-006）。
+         * 拿不到锁就**立刻放弃**，不排队 —— 排队会在几秒后突然点一下屏幕，更糟。
+         */
+        private val automation = Mutex()
+
+        private fun acquireAutomation(what: String): Boolean {
+            if (automation.tryLock()) return true
+            SendLog.d("自动发送", "上一次自动操作还没结束，放弃本次「" + what + "」")
+            return false
+        }
+
+        private fun releaseAutomation() {
+            runCatching { automation.unlock() }
         }
 
         /**
@@ -184,8 +242,15 @@ class AutoSendService : AccessibilityService() {
          */
         suspend fun readChatTitleViaInfo(): String? {
             val service = instance ?: return null
-            return withContext(Dispatchers.Main) {
-                runCatching { service.doReadChatTitleViaInfo() }.getOrNull()
+            if (!acquireAutomation("读聊天信息页")) return null
+            return try {
+                withContext(Dispatchers.Main) {
+                    runCatching { service.doReadChatTitleViaInfo() }
+                        .onFailure { logFailure("读聊天信息页", it) }
+                        .getOrNull()
+                }
+            } finally {
+                releaseAutomation()
             }
         }
 
@@ -196,8 +261,15 @@ class AutoSendService : AccessibilityService() {
          */
         suspend fun pasteIntoChat(): Boolean {
             val service = instance ?: return false
-            return withContext(Dispatchers.Main) {
-                runCatching { service.doPasteIntoChat() }.getOrDefault(false)
+            if (!acquireAutomation("粘贴到聊天")) return false
+            return try {
+                withContext(Dispatchers.Main) {
+                    runCatching { service.doPasteIntoChat() }
+                        .onFailure { logFailure("粘贴到聊天", it) }
+                        .getOrDefault(false)
+                }
+            } finally {
+                releaseAutomation()
             }
         }
 
@@ -207,8 +279,15 @@ class AutoSendService : AccessibilityService() {
          */
         suspend fun sendPhotoViaAlbum(): Boolean {
             val service = instance ?: return false
-            return withContext(Dispatchers.Main) {
-                runCatching { service.doAlbumRoute() }.getOrDefault(false)
+            if (!acquireAutomation("相册路线")) return false
+            return try {
+                withContext(Dispatchers.Main) {
+                    runCatching { service.doAlbumRoute() }
+                        .onFailure { logFailure("相册路线", it) }
+                        .getOrDefault(false)
+                }
+            } finally {
+                releaseAutomation()
             }
         }
 
@@ -222,9 +301,15 @@ class AutoSendService : AccessibilityService() {
             appPackage: String? = null
         ): Boolean {
             val service = instance ?: return false
-            return withContext(Dispatchers.Main) {
-                runCatching { service.doClickChatByName(name, timeoutMs, appPackage) }
-                    .getOrDefault(false)
+            if (!acquireAutomation("点会话")) return false
+            return try {
+                withContext(Dispatchers.Main) {
+                    runCatching { service.doClickChatByName(name, timeoutMs, appPackage) }
+                        .onFailure { logFailure("点会话", it) }
+                        .getOrDefault(false)
+                }
+            } finally {
+                releaseAutomation()
             }
         }
 
@@ -381,14 +466,14 @@ class AutoSendService : AccessibilityService() {
         // 活动窗口标题（有些 App 只在这里给出聊天对象名）优先，它最不容易认错。
         val winTitle = plausibleWindowTitle()
         if (winTitle != null) {
-            SendLog.d("读标题", "命中 " + winTitle + "（来源=活动窗口标题）。标题区候选：" + census)
+            SendLog.d("读标题", "命中 " + SendLog.mask(winTitle) + "（来源=活动窗口标题）。标题区候选：" + census)
             return winTitle
         }
 
         // 微信聊天页不暴露标题，但每条消息的头像带着「昵称头像」——从左半屏那个头像取名字。
         val avatarName = partnerNameFromAvatars(nodes, screenWidth)
         if (avatarName != null) {
-            SendLog.d("读标题", "命中 " + avatarName + "（来源=对端头像：" + avatarCensus(nodes, screenWidth) + "）")
+            SendLog.d("读标题", "命中 " + SendLog.mask(avatarName) + "（来源=对端头像：" + avatarCensus(nodes, screenWidth) + "）")
             return avatarName
         }
 
@@ -396,9 +481,9 @@ class AutoSendService : AccessibilityService() {
         val picked = pickTitle(nodes, titleZone, screenWidth)
         SendLog.d(
             "读标题",
-            (if (picked != null) "命中 " + picked else "没认出来") +
+            (if (picked != null) "命中 " + SendLog.mask(picked) else "没认出来") +
                 "（根=" + owner + "，节点 " + nodes.size + " 个，窗口 " + roots.size + " 个：" + windowInfo +
-                "，窗口事件文本=" + (lastWindowText ?: "无") + "）。标题区候选：" + census +
+                "，窗口事件文本=" + SendLog.mask(lastWindowText) + "）。标题区候选：" + census +
                 "。头像：" + avatarCensus(nodes, screenWidth)
         )
         if (picked != null) return picked
@@ -502,14 +587,23 @@ class AutoSendService : AccessibilityService() {
         }.getOrDefault(false)
         SendLog.d("粘贴", "尝试 1 · 输入框 ACTION_LONG_CLICK = " + longClick)
         delay(PASTE_MENU_DELAY_MS)
-        if (clickPasteInMenu()) {
+        val outcome = clickPasteInMenu()
+        if (outcome == MenuOutcome.CLICKED) {
             delay(PASTE_RESULT_DELAY_MS)
             return finishPaste(collectAll(), box, beforeImages, inputMinTop, screenWidth, input)
         }
 
         // 尝试 2：手势长按。先轻点一下输入框 —— 输入框没聚焦时（键盘没弹出来）
         // 微信那类输入框常常不吃长按；点过之后位置也会变，所以要重新找一次输入框。
-        dismissPasteMenu()
+        // 只有菜单确实弹出来过才按返回键：菜单没弹出来时按返回键就是退出聊天（emc-1-013）。
+        if (outcome == MenuOutcome.NO_PASTE && !dismissPasteMenu(inputMinTop)) {
+            SendLog.d("粘贴", "已经离开聊天页，放弃粘贴")
+            return false
+        }
+        if (!hasInputBelow(collectAll(), inputMinTop)) {
+            SendLog.d("粘贴", "聊天页已经不在了，放弃粘贴")
+            return false
+        }
         SendLog.d("粘贴", "尝试 2 · 先点输入框再长按")
         tap(box.exactCenterX(), box.exactCenterY())
         delay(PASTE_FOCUS_DELAY_MS)
@@ -527,7 +621,7 @@ class AutoSendService : AccessibilityService() {
         SendLog.d("粘贴", "长按手势结果 = " + pressed)
         if (pressed) {
             delay(PASTE_MENU_DELAY_MS)
-            if (clickPasteInMenu()) {
+            if (clickPasteInMenu() == MenuOutcome.CLICKED) {
                 delay(PASTE_RESULT_DELAY_MS)
                 val afterFocus = collectAll()
                 return finishPaste(
@@ -537,7 +631,11 @@ class AutoSendService : AccessibilityService() {
         }
 
         // 尝试 3：让输入框自己执行粘贴动作（EditText 的 ACTION_PASTE）。
-        dismissPasteMenu()
+        dismissPasteMenu(inputMinTop)
+        if (!hasInputBelow(collectAll(), inputMinTop)) {
+            SendLog.d("粘贴", "聊天页已经不在了，放弃粘贴")
+            return false
+        }
         val target = collectAll().lastOrNull { isEditableNode(it) } ?: input
         val actionPaste = runCatching {
             target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
@@ -555,10 +653,17 @@ class AutoSendService : AccessibilityService() {
     }
 
     /**
+     * 菜单这次到底出现没有。
+     * 原来的返回值只有 true/false，把「菜单根本没弹出来」和「菜单弹出来了但没有粘贴项」
+     * 混成了一种情况，调用方只好一律按返回键 —— 而在微信里返回键等于退出聊天（emc-1-013）。
+     */
+    private enum class MenuOutcome { NOT_SHOWN, NO_PASTE, CLICKED }
+
+    /**
      * 在刚弹出来的菜单里点「粘贴」。三种触发方式共用这一步。
      * 顺带把菜单内容和当前窗口列表写进日志 —— 菜单是谁弹的、长什么样，全靠这一行。
      */
-    private fun clickPasteInMenu(): Boolean {
+    private fun clickPasteInMenu(): MenuOutcome {
         val menu = collectAll()
         val entries = ArrayList<String>()
         var pasteNode: AccessibilityNodeInfo? = null
@@ -576,18 +681,32 @@ class AutoSendService : AccessibilityService() {
                 "，窗口 " + windows.orEmpty().size + " 个：" + windowSummary()
         )
         if (pasteNode == null) {
-            SendLog.d("粘贴", "菜单里没有「粘贴」")
-            return false
+            // 一条候选文本都读不到 = 菜单压根没弹出来；读到别的项才叫「有菜单但没有粘贴」。
+            val outcome = if (entries.isEmpty()) MenuOutcome.NOT_SHOWN else MenuOutcome.NO_PASTE
+            SendLog.d("粘贴", "菜单里没有「粘贴」（" + outcome + "）")
+            return outcome
         }
         val ok = click(pasteNode)
         SendLog.d("粘贴", "点「粘贴」= " + ok)
-        return ok
+        return if (ok) MenuOutcome.CLICKED else MenuOutcome.NO_PASTE
     }
 
-    /** 收起刚弹出来的菜单 / 键盘，免得挡着下一次尝试或后面的分享。 */
-    private suspend fun dismissPasteMenu() {
+    /**
+     * 收起刚弹出来的菜单 / 键盘，免得挡着下一次尝试或后面的分享。
+     * **只在聊天页还在时才按返回键**：微信里返回键等于退出聊天，
+     * 盲按一下会把后面的轻点、长按、ACTION_PASTE 全落到会话列表上（emc-1-013）。
+     * 返回「按完之后是否还在聊天页」。
+     */
+    private suspend fun dismissPasteMenu(inputMinTop: Int): Boolean {
+        if (!hasInputBelow(collectAll(), inputMinTop)) {
+            SendLog.d("粘贴", "不按返回键：页面上已经没有输入框，再按就退出去了")
+            return false
+        }
         performGlobalAction(GLOBAL_ACTION_BACK)
         delay(INFO_BACK_DELAY_MS)
+        val stillOnChat = hasInputBelow(collectAll(), inputMinTop)
+        if (!stillOnChat) SendLog.d("粘贴", "按返回键之后已经离开聊天页")
+        return stillOnChat
     }
 
     /**
@@ -626,7 +745,8 @@ class AutoSendService : AccessibilityService() {
         }
         SendLog.d(
             "粘贴",
-            "输入区没多出图片，放弃。输入框文字=" + (input.text?.toString()?.take(40) ?: "（空）")
+            // 输入框里可能就是用户刚写的草稿，打码后再写（emc-1-028）。
+            "输入区没多出图片，放弃。输入框文字=" + SendLog.mask(input.text?.toString())
         )
         return false
     }
@@ -636,20 +756,37 @@ class AutoSendService : AccessibilityService() {
      * 找不到才放宽到以「发送」开头的短文本，而且必须唯一命中 —— 宁可放弃也不乱点。
      */
     private fun sendButtonOnPage(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
-        val exact = nodes.firstOrNull {
-            titleTextOf(it)?.trim() == CONFIRM_SEND_TEXT && boundsOf(it).width() > 0
+        val exact = distinctNodes(
+            nodes.filter {
+                titleTextOf(it)?.trim() == CONFIRM_SEND_TEXT && boundsOf(it).width() > 0
+            }
+        )
+        if (exact.size > 1) {
+            // 同一屏上不止一个「发送」：多半是预览小窗盖在聊天页上，聊天页那个也还在树里。
+            // 点错就是把草稿或别的图发出去，宁可放弃（emc-1-014）。
+            SendLog.d("发送键", "页面上有 " + exact.size + " 个「发送」，位置分不清，放弃自动点")
+            return null
         }
-        if (exact != null) return exact
-        val loose = nodes.filter {
-            val text = titleTextOf(it)?.trim().orEmpty()
-            text.startsWith(CONFIRM_SEND_TEXT) && text.length <= 4 && boundsOf(it).width() > 0
+        if (exact.size == 1) return exact.first()
+        val loose = distinctNodes(
+            nodes.filter {
+                val text = titleTextOf(it)?.trim().orEmpty()
+                text.startsWith(CONFIRM_SEND_TEXT) && text.length <= 4 && boundsOf(it).width() > 0
+            }
+        )
+        if (loose.size > 1) {
+            SendLog.d("发送键", "页面上有 " + loose.size + " 个疑似「发送」，放弃自动点")
+            return null
         }
-        val distinct = loose.distinctBy { node ->
-            val r = boundsOf(node)
-            r.left.toString() + "," + r.top
-        }
-        return if (distinct.size == 1) distinct.first() else null
+        return loose.firstOrNull()
     }
+
+    /** 按屏幕位置去重：同一个按钮在无障碍树里常出现多次（父子节点各一份）。 */
+    private fun distinctNodes(nodes: List<AccessibilityNodeInfo>): List<AccessibilityNodeInfo> =
+        nodes.distinctBy { node ->
+            val r = boundsOf(node)
+            r.left.toString() + "," + r.top + "," + r.right + "," + r.bottom
+        }
 
     // ---------- 相册路线（走微信 / QQ 自己的「+ → 相册」，动图能保住动画） ----------
 
@@ -845,27 +982,33 @@ class AutoSendService : AccessibilityService() {
     }
 
     /** 轻点某个点：用来让输入框先拿到焦点。 */
-    private fun tap(x: Float, y: Float): Boolean = runCatching {
-        val gesture = GestureDescription.Builder()
-            .addStroke(
-                GestureDescription.StrokeDescription(
-                    Path().apply { moveTo(x, y) }, 0L, TAP_MS
-                )
-            )
-            .build()
-        dispatchGesture(gesture, null, null)
-    }.getOrDefault(false)
+    private fun tap(x: Float, y: Float): Boolean = gestureAt(x, y, TAP_MS, "轻点输入框")
 
     /** 长按某个点：微信输入框的菜单只有长按才会出来。 */
-    private fun longPress(x: Float, y: Float): Boolean = runCatching {
+    private fun longPress(x: Float, y: Float): Boolean =
+        gestureAt(x, y, LONG_PRESS_MS, "长按输入框")
+
+    /**
+     * 按坐标点一下（或长按）。
+     * dispatchGesture 的返回值只表示「手势被系统收下了」——不代表点中了，
+     * 真正结果要看回调，所以回调单独写一条日志，调用方要下结论请用 [verifyGone] 这类复查（emc-1-015）。
+     */
+    private fun gestureAt(x: Float, y: Float, durationMs: Long, what: String): Boolean = runCatching {
         val gesture = GestureDescription.Builder()
             .addStroke(
-                GestureDescription.StrokeDescription(
-                    Path().apply { moveTo(x, y) }, 0L, LONG_PRESS_MS
-                )
+                GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0L, durationMs)
             )
             .build()
-        dispatchGesture(gesture, null, null)
+        val callback = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                SendLog.d("手势", what + "：系统报告手势已执行完")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                SendLog.d("手势", what + "：系统报告手势被取消（多半是页面已经变了）")
+            }
+        }
+        dispatchGesture(gesture, callback, null)
     }.getOrDefault(false)
 
     /** 标题区里所有带文本的节点，从上到下摊开 —— 名字认错时全靠这一行定位。 */
@@ -878,7 +1021,8 @@ class AutoSendService : AccessibilityService() {
                 if (r.top < 0 || r.top > titleZone + 60) return@mapNotNull null
                 val src = (if (node.text.isNullOrBlank()) "cd" else "t") +
                     (if (node.isClickable) ",可点" else "")
-                r.top to (text.take(12) + "(" + src + ")@" + r.top + "[" + r.left + "-" + r.right + "]")
+                // 标题区里躺着的往往就是聊天对象名，写进日志前先打码（emc-1-028）。
+                r.top to (SendLog.mask(text) + "(" + src + ")@" + r.top + "[" + r.left + "-" + r.right + "]")
             }
             .sortedBy { it.first }
             .take(12)
@@ -886,13 +1030,14 @@ class AutoSendService : AccessibilityService() {
         return if (items.isEmpty()) "无" else items.joinToString(" / ")
     }
 
-    /** 当前所有窗口的摘要（类型 / 包名 / 窗口标题），用于诊断。 */
+    /** 当前所有窗口的摘要（类型 / 包名 / 窗口标题打码），用于诊断。 */
     private fun windowSummary(): String = runCatching {
         windows.orEmpty().joinToString(" / ") { w ->
             val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: "-"
             val title = runCatching { w.title?.toString() }.getOrNull() ?: "-"
             val kind = if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) "APP" else "T" + w.type
-            kind + ":" + pkg + ":" + title.take(16)
+            // 窗口标题在微信里就等于聊天对象名，同样打码（emc-1-028）。
+            kind + ":" + pkg + ":" + SendLog.mask(title)
         }
     }.getOrDefault("-")
 
@@ -950,10 +1095,26 @@ class AutoSendService : AccessibilityService() {
                 val r = boundsOf(node)
                 if (r.width() <= 0 || r.height() <= 0 || r.top !in 0 until titleZone) return@mapNotNull null
                 if (r.centerX() > screenWidth * TITLE_MAX_CENTER_RATIO) return@mapNotNull null
+                // 消息列表里的气泡与时间标签绝不能当名字（emc-1-017）：
+                // 它们在可滑动容器里，真正的标题栏不是。
+                if (hasScrollableAncestor(node)) return@mapNotNull null
                 r.top to text
             }
             .minByOrNull { it.first }
             ?.second
+
+    /** 节点是不是在可滑动容器（消息列表、会话列表）里。 */
+    private fun hasScrollableAncestor(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = runCatching { node.parent }.getOrNull()
+        var depth = 0
+        while (current != null && depth < 8) {
+            val parent = current
+            if (runCatching { parent.isScrollable }.getOrDefault(false)) return true
+            current = runCatching { parent.parent }.getOrNull()
+            depth++
+        }
+        return false
+    }
 
     /**
      * 从聊天页的头像里取聊天对象名。
@@ -981,7 +1142,7 @@ class AutoSendService : AccessibilityService() {
         // 1:1 聊天不会。群聊里只看得见一个人的消息时，上面那条「唯一性」判据会
         // 把这个成员的名字当成聊天对象 —— 那就会把表情私发给某个人，所以这里宁可认输。
         if (nodes.any { it.text?.toString()?.trim() == name }) {
-            SendLog.d("读标题", "头像「" + name + "」在别处也有同名文本，像是群聊，不敢认")
+            SendLog.d("读标题", "头像「" + SendLog.mask(name) + "」在别处也有同名文本，像是群聊，不敢认")
             return null
         }
         return name
@@ -998,12 +1159,28 @@ class AutoSendService : AccessibilityService() {
         return name.takeIf { looksLikeName(it) }
     }
 
-    /** 名字像不像人名：长度合适，且不是微信的按钮 / 消息文案。 */
+    /** 名字像不像人名：长度合适，且不是微信的按钮 / 消息文案 / 时间标签。 */
     private fun looksLikeName(text: String): Boolean =
         text.length in 1..MAX_TITLE_LENGTH &&
             text !in IGNORED_TITLES &&
             text !in IGNORED_TITLE_BUTTONS &&
-            text !in IGNORED_MEDIA
+            text !in IGNORED_MEDIA &&
+            !looksLikeTimestamp(text)
+
+    /**
+     * 消息列表里的时间标签：「21:03」「昨天 21:03」「3月5日」……
+     * 它们又短又靠上，不排掉就会被当成聊天对象名（emc-1-017）。
+     * 注意别把「周杰伦」这类正常昵称一起排掉，所以只认「星期 / 周几」不认单个「周」。
+     */
+    private fun looksLikeTimestamp(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        if (TIME_ONLY.matches(t)) return true
+        if (t.startsWith("昨天") || t.startsWith("今天") || t.startsWith("星期") || t.startsWith("周几")) {
+            return true
+        }
+        return t.contains("月") && t.contains("日")
+    }
 
     /** 认不出来时，把屏上所有头像摊开写日志。 */
     private fun avatarCensus(nodes: List<AccessibilityNodeInfo>, screenWidth: Int): String {
@@ -1013,7 +1190,7 @@ class AutoSendService : AccessibilityService() {
             val r = boundsOf(node)
             if (r.width() <= 0 || r.height() <= 0) return@mapNotNull null
             val side = if (r.centerX() > screenWidth * 0.5f) "右" else "左"
-            desc.take(12) + "@" + side + r.top
+            SendLog.mask(desc) + "@" + side + r.top
         }
         return if (items.isEmpty()) "无" else items.take(8).joinToString(" / ")
     }
@@ -1097,8 +1274,14 @@ class AutoSendService : AccessibilityService() {
                     )
                     if (ok) {
                         clickConfirmIfDialog()
-                        verifyGone(target, appPackage, rowMinTop)
-                        return true
+                        val gone = verifyGone(target, appPackage, rowMinTop)
+                        if (!gone) {
+                            // 点过了但列表里还有同名行：多半没点中。
+                            // 这里**不能再点一次** —— 万一是无障碍树没刷新，就成了连点两下，
+                            // 让用户自己点最安全（调用方只会把提示换成「自己点」）。
+                            SendLog.d("点会话", "点击手势发出去了但没确认到效果，交给用户自己点")
+                        }
+                        return gone
                     }
                 }
 
@@ -1148,6 +1331,8 @@ class AutoSendService : AccessibilityService() {
         nodes: List<AccessibilityNodeInfo>,
         minTop: Int
     ): AccessibilityNodeInfo? {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
         var send: AccessibilityNodeInfo? = null
         var cancel: AccessibilityNodeInfo? = null
         var marker = false
@@ -1155,29 +1340,60 @@ class AutoSendService : AccessibilityService() {
             val text = titleTextOf(node) ?: continue
             val r = boundsOf(node)
             if (r.width() <= 0 || r.height() <= 0 || r.top < minTop) continue
-            if (text.contains("发送给")) marker = true
+            // ① 只认「发送给…」开头的标题节点；正文里出现这三个字不算（emc-0-005）。
+            if (text.startsWith(MARKER_SEND_TO)) marker = true
             if (text == CONFIRM_SEND_TEXT) send = node
             if (text == CONFIRM_CANCEL_TEXT) cancel = node
         }
         val target = send ?: return null
         val other = cancel
-        if (!marker && (other == null || !alongside(boundsOf(target), boundsOf(other)))) return null
-        return target
+        val buttons = boundsOf(target)
+        // ② 「发送」与「取消」成对并排，且这对按钮不在屏幕最底部那条输入栏带子里 ——
+        //    聊天页输入框旁边那个「发送」永远贴着底部，而且它旁边没有「取消」。
+        val sameRow = other != null &&
+            alongside(buttons, boundsOf(other), screenWidth, screenHeight) &&
+            !inInputBar(buttons, screenHeight)
+        if (sameRow) return target
+        // ③ 只有成对按钮凑不齐时，才允许单靠「发送给：X」标题 + 按钮浮在屏幕中段来判断。
+        if (marker && inDialogZone(buttons, screenHeight)) return target
+        return null
     }
 
-    /** 两个按钮是不是并排在一起（确认框里「发送」和「取消」总是挨着）。 */
-    private fun alongside(a: Rect, b: Rect): Boolean =
-        Math.abs(a.centerY() - b.centerY()) < 220 && Math.abs(a.centerX() - b.centerX()) < 1100
+    /** 聊天页输入栏那条带子：这上面的「发送」绝不能点。 */
+    private fun inInputBar(r: Rect, screenHeight: Int): Boolean =
+        r.centerY() > screenHeight * INPUT_BAR_GUARD_RATIO
 
-    /** 点完复查一次：那一行还在不在。只写日志，不改结论。 */
-    private suspend fun verifyGone(target: String, appPackage: String?, rowMinTop: Int) {
+    /** 确认框浮在屏幕中段，不会贴着任何一条边。 */
+    private fun inDialogZone(r: Rect, screenHeight: Int): Boolean {
+        val centerY = r.centerY()
+        return centerY > screenHeight * 0.12f && centerY < screenHeight * (INPUT_BAR_GUARD_RATIO - 0.02f)
+    }
+
+    /**
+     * 两个按钮是不是并排在一起（确认框里「发送」和「取消」总是挨着）。
+     * 阈值必须按屏幕比例算：老实现写死 1100px，在 720/1080px 屏上恒为真，等于没有判据（emc-0-005）。
+     */
+    private fun alongside(a: Rect, b: Rect, screenWidth: Int, screenHeight: Int): Boolean =
+        Math.abs(a.centerY() - b.centerY()) < screenHeight * 0.05f &&
+            Math.abs(a.centerX() - b.centerX()) < screenWidth * 0.6f
+
+    /**
+     * 点完复查一次：那一行还在不在。
+     * 结论以复查为准 —— 手势被系统收下不等于点到了（emc-1-015）。
+     * 拿不到根节点时无法判断，回 true（按「已点开」处理，避免调用方重来一次）。
+     */
+    private suspend fun verifyGone(target: String, appPackage: String?, rowMinTop: Int): Boolean {
         delay(CLICK_VERIFY_DELAY_MS)
         val roots = applicationRoots()
-        if (roots.isEmpty()) return
+        if (roots.isEmpty()) {
+            SendLog.d("点会话", "点击后复查：拿不到根节点，无法确认，按已点开处理")
+            return true
+        }
         val nodes = ArrayList<AccessibilityNodeInfo>()
         roots.forEach { collect(it, nodes, 0) }
         val left = matchRows(nodes, target, appPackage, rowMinTop).size
         SendLog.d("点会话", "点击后复查：列表里还剩 " + left + " 行同名（0 表示确实进去了）")
+        return left == 0
     }
 
     /** 把标题栏以下看得见的短文本按位置摊开 —— 列表里到底写了什么，一看就知道。 */
@@ -1192,7 +1408,7 @@ class AutoSendService : AccessibilityService() {
                 if (text.length > MAX_TITLE_LENGTH) return@mapNotNull null
                 val r = boundsOf(node)
                 if (r.width() <= 0 || r.height() <= 0 || r.top < minTop) return@mapNotNull null
-                r.top to (text.take(16) + "@" + r.top + "[" + r.left + "-" + r.right + "]")
+                r.top to (SendLog.mask(text) + "@" + r.top + "[" + r.left + "-" + r.right + "]")
             }
             .sortedBy { it.first }
             .take(8)
@@ -1236,7 +1452,10 @@ class AutoSendService : AccessibilityService() {
 
     /**
      * 三级兜底：候选名里包着列表里的名字（例如「岩星，点击进入聊天信息」里包着「岩星」）。
-     * 只在候选名本身带分隔符时才敢用 —— 否则「图片」这类按钮文案也可能恰好包住某个真名字。
+     * 判据必须严 —— 宁可让用户自己点，也不能点到别人：
+     *   ① 候选名本身得带分隔符（说明它是从标题栏文案里拼出来的，不是纯名字）；
+     *   ② 列表文本必须整段落在候选名的**头或尾**（原来的 `contains` 连「星」「岩」这种单字也算命中，emc-0-004）；
+     *   ③ 去掉列表文本后，候选名剩下的部分只能是固定装饰文案，不含任何其它字符。
      */
     private fun containedRows(
         nodes: List<AccessibilityNodeInfo>,
@@ -1250,7 +1469,7 @@ class AutoSendService : AccessibilityService() {
             val pkg = runCatching { node.packageName?.toString() }.getOrNull()
             if (appPackage != null && pkg != null && pkg != appPackage) continue
             val text = normalizeName(titleTextOf(node) ?: continue)
-            if (text.length !in 2..12 || !target.contains(text)) continue
+            if (!isNameInsideTarget(target, text)) continue
             val own = boundsOf(node)
             if (own.width() <= 0 || own.height() <= 0 || own.top < minTop) continue
             val clickable = findClickableAncestor(node) ?: node
@@ -1259,7 +1478,25 @@ class AutoSendService : AccessibilityService() {
             val key = r.left.toString() + "," + r.top + "," + r.right + "," + r.bottom
             found.putIfAbsent(key, clickable)
         }
+        if (found.isNotEmpty()) {
+            SendLog.d("点会话", "兜底匹配命中 " + found.size + " 行（目标=" + SendLog.mask(target) + "）")
+        }
         return found.values.toList()
+    }
+
+    /**
+     * 兜底匹配的唯一判据：列表文本整段出现在候选名的头或尾，剩下的部分只能是装饰文案。
+     * 例如候选名「岩星，点击进入聊天信息」与列表文本「岩星」：剩下「，点击进入聊天信息」，通过。
+     */
+    private fun isNameInsideTarget(target: String, text: String): Boolean {
+        if (text.length !in 2..12) return false
+        val rest = when {
+            target.startsWith(text) -> target.substring(text.length)
+            target.endsWith(text) -> target.substring(0, target.length - text.length)
+            else -> return false
+        }
+        val trimmed = rest.trim { it.isWhitespace() || it in CONTAINED_SEPARATORS || it == '）' || it == ')' }
+        return trimmed.isEmpty() || trimmed in CONTAINED_DECORATIONS
     }
 
     /** 去掉肉眼看不见的占位字符（QQ 昵称里常见 U+3164 这种），用于宽松兜底匹配。 */
@@ -1275,11 +1512,7 @@ class AutoSendService : AccessibilityService() {
         // 列表项自己不可点时，退回按坐标点一下。
         val r = boundsOf(node)
         if (r.width() <= 0 || r.height() <= 0) return false
-        val path = Path().apply { moveTo(r.exactCenterX(), r.exactCenterY()) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 40L))
-            .build()
-        return dispatchGesture(gesture, null, null)
+        return gestureAt(r.exactCenterX(), r.exactCenterY(), 40L, "节点坐标点击")
     }
 
     // ---------- 节点遍历 ----------

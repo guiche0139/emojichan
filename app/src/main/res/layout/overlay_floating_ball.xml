@@ -1,7 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  悬浮球。
+  尺寸由窗口参数决定（用户设的直径 + 2×4dp），这里 padding 4dp 就是那圈触摸余量：
+  看起来还是那么大，手指能按到的范围比看着的大一圈。
+  两种长相二选一：ImageView 显示图片（默认像素猫 / 用户自己选的图），
+  TextView 是纯色表情球，样式由 FloatingBallService.applyBallStyle 切。
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="56dp"
-    android:layout_height="56dp">
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="4dp">
+
+    <ImageView
+        android:id="@+id/floatingBallImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_floating_ball_photo"
+        android:clipToOutline="true"
+        android:padding="2dp"
+        android:elevation="6dp"
+        android:scaleType="centerCrop"
+        android:src="@drawable/game" />
 
     <TextView
         android:id="@+id/floatingBallIcon"
@@ -11,5 +30,6 @@
         android:elevation="6dp"
         android:gravity="center"
         android:text="@string/overlay_ball_icon"
-        android:textSize="26sp" />
+        android:textSize="26sp"
+        android:visibility="gone" />
 </FrameLayout>

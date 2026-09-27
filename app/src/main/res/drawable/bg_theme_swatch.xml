@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标底层：像素猫这张图自身是白底，底色也铺白，边缘裁切就看不出来。 -->
+<!-- 主题色小圆点：只画形状，颜色由代码用 backgroundTintList 染。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
+    android:shape="oval">
     <solid android:color="#FFFFFF" />
 </shape>

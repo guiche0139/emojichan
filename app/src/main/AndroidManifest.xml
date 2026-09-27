@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!--
+      图片一律通过系统的「选择图片」（ACTION_GET_CONTENT）拿，
+      写相册走 MediaStore 自己的私有条目 —— 都不需要任何存储权限。
+      emc-1-021：原来那句 READ_MEDIA_IMAGES 只会把导入卡死在 Android 14 的
+      「仅选择的照片」上，删掉之后权限面板干净了，导入也不再问用户要权限。
+    -->
     <!--
       「显示在其他应用上层」，悬浮球必需。
       它只能由用户在系统设置里手动打开（代码里用 Settings.canDrawOverlays 判断），
@@ -26,17 +29,37 @@
         </intent>
     </queries>
     <application
-        android:allowBackup="true"
+        android:name=".EmojiChanApp"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.EmojiChan">
+        <!--
+          launchMode=singleTop：本应用正开着时再分享进来不新建一个界面，
+          只走 onNewIntent，导入完还停在原来那一页的栈上。
+        -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+              出现在系统分享面板里：别的应用分享图片 / GIF 时能选「表情酱」，直接收进表情库。
+              只声明 image/*（含 image/gif），不去抢文档、音频那些分享。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
         <activity android:name=".EmojiDetailActivity" />
@@ -44,25 +67,6 @@
             android:name=".sender.SendLogActivity"
             android:exported="false"
             android:label="@string/log_title" />
-        <activity
-            android:name=".sender.ChatProbeActivity"
-            android:label="@string/probe_title" />
-        <!--
-          探测用无障碍服务：由系统绑定、由用户手动开启，不是普通运行时权限。
-          android:label 会显示在系统「辅助功能」列表里开关的旁边。
-        -->
-        <service
-            android:name=".sender.ChatProbeService"
-            android:exported="true"
-            android:label="@string/accessibility_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
         <!--
           场景感知 + 自动选中聊天对象用的无障碍服务。
           和白名单一样由系统在分发阶段过滤，平时不监听、不读屏：
@@ -89,11 +93,13 @@
             android:exported="false" />
         <!--
           把 filesDir/emojis 下的图片以 content:// 形式分享给微信等外部应用。
-          exported=false + grantUriPermissions=true：只在随 Intent 发放授权时可读，
+          exported=false + grantUriPermissions=true：只在随 Intent / 剪贴板发放授权时可读，
           不做全局开放。
+          用子类而不是 androidx 原版：每次外部取图都写一行流水（谁、按什么类型、取走多少），
+          粘贴出问题时用来分清是「没人来取」还是「取走了但画成静图」。见 LoggingFileProvider。
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".sender.LoggingFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

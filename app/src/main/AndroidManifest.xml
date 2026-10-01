@@ -14,6 +14,17 @@
       因此点表情后能直接把微信拉起来。
     -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+      相册读权限：**只为导入时问得出原文件名**（图片选择器只肯给 id 时，拿这个 id 去
+      别处换回真名需要它）。用户点「允许读取相册」才申请，不授权也能正常导入 —— 那时
+      走「从文件导入」或兜底名（emc-2-008）。
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <!--
       Android 11 起的包可见性：不声明这一段，本应用就「看不到」微信 ——
       表现是只带 setPackage 的隐式分享 Intent 解析不到任何目标，直接抛
@@ -26,6 +37,15 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="image/*" />
+        </intent>
+        <!--
+          设置页「悬浮球出现在哪些应用」要列出所有带启动图标的应用。
+          Android 11 起包可见性只看声明：不写这一条，queryIntentActivities(MAIN + LAUNCHER)
+          一个都返回不了 —— 用户实测的现象就是那张列表空空如也（emc-2-011）。
+        -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
     <application
@@ -91,6 +111,20 @@
         <service
             android:name=".sender.FloatingBallService"
             android:exported="false" />
+        <!--
+          下拉状态栏里的快捷开关（QS 磁贴）：点一下挂上 / 收起悬浮球。
+          用户得在状态栏编辑面板里加一次，设置页那行负责引导（Android 13+ 能直接弹系统确认框）。
+        -->
+        <service
+            android:name=".sender.BallTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
         <!--
           把 filesDir/emojis 下的图片以 content:// 形式分享给微信等外部应用。
           exported=false + grantUriPermissions=true：只在随 Intent / 剪贴板发放授权时可读，

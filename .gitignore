@@ -30,6 +30,16 @@ local.properties
 captures/
 .cxx/
 
+# 正式签名密钥与口令（绝不入库；只在本机 keystore/ 和 keystore.properties 里）
+keystore/
+keystore.properties
+
+# 本地素材（体积大、与产品无关）
+meme/
+
+# 预览图的渲染草稿脚本（只在本机跑，带着绝对路径）
+preview/_*.ps1
+
 # Project docs kept local only
 design.txt
 design/
@@ -40,6 +50,7 @@ Bug清单.md
 已修Bug.md
 日志.md
 插件系统.md
+性能优化.md
 表情发送模块.md
 
 # Publish staging folder + its sync script (local only)

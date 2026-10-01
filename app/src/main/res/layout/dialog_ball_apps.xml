@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自建的应用多选列表（emc-2-018）。
+  以前用的是 AlertDialog 自带的 setMultiChoiceItems：用户那台设备上 114 个应用整列渲染成
+  空白（标题、提示都在，就是一条条目都看不见）。所以这里自己摆一个 ListView —— 行布局、
+  文字颜色、列表高度都由我们说了算，不再受 AlertDialog 内部那套视图摆法影响。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp"
+    android:paddingTop="4dp">
+
+    <TextView
+        android:id="@+id/ballAppsHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/ball_apps_dialog_hint"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:hint="@string/ball_apps_search_hint">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/ballAppsSearch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:imeOptions="actionDone"
+            android:inputType="text"
+            android:maxLines="1" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <TextView
+        android:id="@+id/ballAppsCount"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <ListView
+        android:id="@+id/ballAppsList"
+        android:layout_width="match_parent"
+        android:layout_height="300dp"
+        android:layout_marginTop="4dp"
+        android:divider="@color/divider"
+        android:dividerHeight="1dp"
+        android:scrollbarStyle="outsideOverlay" />
+
+    <!-- 清单是怎么凑出来的：留一行小字，出问题时用户照着念就能定位是哪一层没拿到。 -->
+    <TextView
+        android:id="@+id/ballAppsInventory"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="10sp" />
+</LinearLayout>

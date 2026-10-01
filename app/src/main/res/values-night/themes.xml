@@ -6,14 +6,15 @@
       在深色下照样有效。
     -->
     <style name="Theme.EmojiChan" parent="Theme.Material3.Dark.NoActionBar">
-        <item name="colorPrimary">@color/palette_navy_primary</item>
-        <item name="colorOnPrimary">@color/palette_on_primary</item>
-        <item name="colorPrimaryContainer">@color/palette_navy_primary_container</item>
-        <item name="colorOnPrimaryContainer">@color/palette_navy_on_primary_container</item>
+        <item name="colorPrimary">@color/palette_blue_primary</item>
+        <item name="colorOnPrimary">@color/palette_blue_on_primary</item>
+        <item name="colorPrimaryContainer">@color/palette_blue_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/palette_blue_on_primary_container</item>
 
-        <item name="colorSecondary">@color/palette_navy_secondary</item>
-        <item name="colorSecondaryContainer">@color/palette_navy_secondary_container</item>
-        <item name="colorOnSecondaryContainer">@color/palette_navy_on_secondary_container</item>
+        <item name="colorSecondary">@color/palette_blue_secondary</item>
+        <item name="colorOnSecondary">@color/palette_blue_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/palette_blue_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/palette_blue_on_secondary_container</item>
 
         <item name="colorSurface">@color/surface</item>
         <item name="colorOnSurface">@color/text_primary</item>
@@ -25,7 +26,7 @@
         <item name="colorOutlineVariant">@color/divider</item>
         <item name="colorError">@color/danger</item>
 
-        <item name="colorAccent">@color/palette_navy_primary</item>
+        <item name="colorAccent">@color/palette_blue_primary</item>
         <item name="android:colorBackground">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:statusBarColor">@color/background</item>

@@ -8,10 +8,10 @@
     <com.google.android.material.textfield.TextInputLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="@string/dialog_category_hint">
+        android:hint="@string/dialog_tag_hint">
 
         <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/categoryInput"
+            android:id="@+id/inputField"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:inputType="text"

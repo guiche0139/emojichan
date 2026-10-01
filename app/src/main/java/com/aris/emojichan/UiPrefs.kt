@@ -25,31 +25,31 @@ object UiPrefs {
 
     // ---------------- 主题色 ----------------
 
-    /** 默认主题色：深蓝（用户指定），排在选择列表第一位。 */
-    const val THEME_NAVY = "navy"
-    const val THEME_PURPLE = "purple"
+    /** 默认主题色：应用图标里的天空蓝，排在选择列表第一位。 */
     const val THEME_BLUE = "blue"
-    const val THEME_GREEN = "green"
-    const val THEME_ORANGE = "orange"
+
+    /** 应用图标里的樱花粉。 */
     const val THEME_PINK = "pink"
 
     /** 顺序就是设置页单选框的顺序；加主题色时这里和 themes.xml 一起加。 */
-    val THEMES = listOf(THEME_NAVY, THEME_PURPLE, THEME_BLUE, THEME_GREEN, THEME_ORANGE, THEME_PINK)
+    val THEMES = listOf(THEME_BLUE, THEME_PINK)
 
-    fun themeKey(context: Context): String =
-        prefs(context).getString(KEY_THEME, THEME_NAVY) ?: THEME_NAVY
+    /**
+     * 老版本存过 navy / purple / green / orange 四种色，那些调色板已经删了，
+     * 存的值不再出现在 [THEMES] 里 —— 一律回落到默认的天空蓝，不然套不上 overlay。
+     */
+    fun themeKey(context: Context): String {
+        val saved = prefs(context).getString(KEY_THEME, THEME_BLUE) ?: THEME_BLUE
+        return if (saved in THEMES) saved else THEME_BLUE
+    }
 
     fun setThemeKey(context: Context, key: String) {
         prefs(context).edit().putString(KEY_THEME, key).apply()
     }
 
     private fun overlayOf(key: String): Int = when (key) {
-        THEME_PURPLE -> R.style.ThemeOverlay_EmojiChan_Purple
-        THEME_BLUE -> R.style.ThemeOverlay_EmojiChan_Blue
-        THEME_GREEN -> R.style.ThemeOverlay_EmojiChan_Green
-        THEME_ORANGE -> R.style.ThemeOverlay_EmojiChan_Orange
         THEME_PINK -> R.style.ThemeOverlay_EmojiChan_Pink
-        else -> R.style.ThemeOverlay_EmojiChan_Navy
+        else -> R.style.ThemeOverlay_EmojiChan_Blue
     }
 
     /** 必须在 setContentView 之前调用，否则已经 inflate 出来的 View 拿的还是上一次的颜色。 */
@@ -115,7 +115,12 @@ object UiPrefs {
 
     // ---------------- 悬浮球 ----------------
 
+    /** 默认：扁平猫脸（应用图标那张，drawable/ic_cat_face.xml 的几何 + ic_ball_flat.xml 的取景）。 */
     const val BALL_DEFAULT = "default"
+
+    /** 原图标：像素猫（drawable-nodpi/game.png）。0.1.401 之前它一直是默认那一版。 */
+    const val BALL_CLASSIC = "classic"
+
     const val BALL_DOT = "dot"
     const val BALL_CUSTOM = "custom"
 

@@ -16,7 +16,9 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
+import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
+import com.aris.emojichan.data.TagEntity
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.bitmap.CenterCrop
 import com.bumptech.glide.load.resource.bitmap.RoundedCorners
@@ -30,12 +32,12 @@ import java.io.File
 /**
  * 悬浮球点开后弹出的表情选择面板。
  *
- * 只做三件事：列出表情（最近 / 全部 / 收藏 / 自定义分类）→ 用户点一张 → 交给
+ * 只做三件事：列出表情（最近 / 全部 / 收藏，可再叠加一个标签）→ 用户点一张 → 交给
  * [EmojiShare] 分享出去。窗口本身由 [FloatingBallService] 挂载和移除，
  * 这里只管窗口里那棵树。
  *
- * 分组名直接用字符串（而不是资源 id）作为键：分类名来自数据库，
- * 与「最近 / 全部 / 收藏」共享一套 chip 渲染逻辑，字符串比较最省事。
+ * 上排三颗用字符串（而不是资源 id）作为键：与标签行共享一套 chip 渲染逻辑，
+ * 字符串比较最省事。
  */
 class SendPanelController(
     private val host: Context,
@@ -52,6 +54,8 @@ class SendPanelController(
     }
 
     private val chipContainer: LinearLayout = root.findViewById(R.id.sendPanelChips)
+    private val tagRow: View = root.findViewById(R.id.sendPanelTagRow)
+    private val tagChipContainer: LinearLayout = root.findViewById(R.id.sendPanelTagChips)
     private val list: RecyclerView = root.findViewById(R.id.sendPanelList)
     private val emptyView: TextView = root.findViewById(R.id.sendPanelEmpty)
     private val targetView: TextView = root.findViewById(R.id.sendPanelTarget)
@@ -76,6 +80,12 @@ class SendPanelController(
     private var current: String = ""
     private var loadJob: Job? = null
 
+    /** 标签 chip 和它对应的标签 id；id = null 是「不限」。 */
+    private var tagChips: List<TagChip> = emptyList()
+    private var currentTagId: Long? = null
+
+    private data class TagChip(val id: Long?, val view: TextView)
+
     fun bind() {
         root.findViewById<View>(R.id.sendPanelMask).setOnClickListener { onClose() }
         root.findViewById<View>(R.id.sendPanelClose).setOnClickListener { onClose() }
@@ -86,9 +96,10 @@ class SendPanelController(
         refreshTarget()
 
         scope.launch {
-            val categories = repository.getAllCategories().first()
+            val tags = repository.getTags()
             val hasRecent = repository.getRecentEmojis(RECENT_LIMIT).first().isNotEmpty()
-            buildChips(categories)
+            buildChips()
+            buildTagChips(tags)
             // 首次使用还没有「最近」时直接落在「全部」，避免首屏是空的。
             select(
                 host.getString(
@@ -142,32 +153,62 @@ class SendPanelController(
         runCatching { host.startActivity(intent) }
     }
 
-    private fun buildChips(categories: List<String>) {
+    /** 上排永远是这三颗；标签单独一行，两个维度各占一行（见 [buildTagChips]）。 */
+    private fun buildChips() {
         chipContainer.removeAllViews()
-        val labels = mutableListOf(
+        val labels = listOf(
             host.getString(R.string.overlay_chip_recent),
             host.getString(R.string.overlay_chip_all),
             host.getString(R.string.overlay_chip_favorites)
         )
-        labels += categories
 
         chipViews = labels.map { label ->
-            val chip = TextView(host).apply {
-                text = label
-                textSize = 13f
-                setPadding(dp(14), dp(7), dp(14), dp(7))
-                setOnClickListener { select(label) }
-            }
-            chipContainer.addView(
-                chip,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = dp(8) }
-            )
+            val chip = createChip(label) { select(label) }
+            chipContainer.addView(chip, chipParams())
             chip
         }
     }
+
+    /**
+     * 标签行。第一个永远是「不限」，后面每个标签一个 chip —— 单选，不搞多选：
+     * 悬浮球面板是「赶紧挑一张发出去」的场景，多选只会让人多点两下。
+     * 一个标签都没有时整行藏起来，否则面板上会多出一行只有「不限」的空壳。
+     */
+    private fun buildTagChips(tags: List<TagEntity>) {
+        tagRow.visibility = if (tags.isEmpty()) View.GONE else View.VISIBLE
+        tagChipContainer.removeAllViews()
+        if (tags.isEmpty()) {
+            tagChips = emptyList()
+            return
+        }
+
+        val entries: List<Pair<Long?, String>> =
+            listOf(null to host.getString(R.string.overlay_tag_none)) + tags.map { it.id to it.name }
+        tagChips = entries.map { (id, label) ->
+            val chip = createChip(label) { selectTag(id) }
+            tagChipContainer.addView(chip, chipParams())
+            TagChip(id, chip)
+        }
+        refreshTagChips()
+    }
+
+    /**
+     * chip 一律建在 [themed] 上：host 是 Service，拿不到 AppCompat 的深色覆盖，
+     * 用 host 建出来的 TextView 解析 @color/category_chip_bg 只会得到浅色那套值 ——
+     * 深色模式下就是浅底配浅字，选没选中分不清（emc-1-025）。
+     */
+    private fun createChip(label: String, onClick: () -> Unit): TextView =
+        TextView(themed).apply {
+            text = label
+            textSize = 13f
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setOnClickListener { onClick() }
+        }
+
+    private fun chipParams() = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    ).apply { marginEnd = dp(8) }
 
     private fun select(label: String) {
         current = label
@@ -177,37 +218,71 @@ class SendPanelController(
         // 否则快速连点 chip 时后到的旧结果会覆盖新结果。
         loadJob?.cancel()
         loadJob = scope.launch {
-            val items = query(label).first()
-            adapter.submitList(items)
+            val items = loadItems()
 
             val blank = items.isEmpty()
             emptyView.visibility = if (blank) View.VISIBLE else View.GONE
             if (blank) {
-                emptyView.text = if (label == host.getString(R.string.overlay_chip_recent)) {
-                    host.getString(R.string.overlay_empty_recent)
-                } else {
-                    host.getString(R.string.overlay_empty)
+                emptyView.text = when {
+                    currentTagId != null -> host.getString(R.string.overlay_empty_tag)
+                    current == host.getString(R.string.overlay_chip_recent) ->
+                        host.getString(R.string.overlay_empty_recent)
+                    else -> host.getString(R.string.overlay_empty)
                 }
             }
+            adapter.submitList(items)
         }
+    }
+
+    /**
+     * 选中标签（null = 不限）。
+     *
+     * 标签和上排那三颗是两个独立维度，可以叠加。唯一的例外是「最近」：它本来就不是筛选，
+     * 叠加标签后语义会变成「所有挂了这个标签的图」，与 chip 上的字对不上，
+     * 所以一旦选了标签就自动切到「全部」。
+     */
+    private fun selectTag(tagId: Long?) {
+        currentTagId = tagId
+        if (tagId != null && current == host.getString(R.string.overlay_chip_recent)) {
+            current = host.getString(R.string.overlay_chip_all)
+            refreshChips()
+        }
+        refreshTagChips()
+        select(current)
+    }
+
+    private suspend fun loadItems(): List<EmojiEntity> {
+        val tagId = currentTagId ?: return query(current).first()
+        val favorites = host.getString(R.string.overlay_chip_favorites)
+        return repository.findFiltered(
+            EmojiFilter(
+                favoritesOnly = current == favorites,
+                tagIds = listOf(tagId)
+            )
+        )
     }
 
     private fun refreshChips() {
-        chipViews.forEach { chip ->
-            val selected = chip.text.toString() == current
-            chip.setTextColor(if (selected) Color.WHITE else themed.getColor(R.color.text_primary))
-            chip.setBackgroundResource(
-                if (selected) R.drawable.category_chip_selected_bg
-                else R.drawable.category_chip_bg
-            )
-        }
+        chipViews.forEach { chip -> paintChip(chip, chip.text.toString() == current) }
     }
 
+    private fun refreshTagChips() {
+        tagChips.forEach { chip -> paintChip(chip.view, chip.id == currentTagId) }
+    }
+
+    private fun paintChip(chip: TextView, selected: Boolean) {
+        chip.setTextColor(if (selected) Color.WHITE else themed.getColor(R.color.text_primary))
+        chip.setBackgroundResource(
+            if (selected) R.drawable.category_chip_selected_bg
+            else R.drawable.category_chip_bg
+        )
+    }
+
+    /** 标签为空时按上排那三颗查；label 只可能是这三颗之一，兜底给「全部」。 */
     private fun query(label: String): Flow<List<EmojiEntity>> = when (label) {
         host.getString(R.string.overlay_chip_recent) -> repository.getRecentEmojis(RECENT_LIMIT)
-        host.getString(R.string.overlay_chip_all) -> repository.getAllEmojis()
         host.getString(R.string.overlay_chip_favorites) -> repository.getFavorites()
-        else -> repository.getByCategory(label)
+        else -> repository.getAllEmojis()
     }
 
     private fun dp(value: Int): Int =

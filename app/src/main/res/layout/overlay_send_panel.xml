@@ -72,6 +72,42 @@
                 android:paddingBottom="8dp" />
         </HorizontalScrollView>
 
+        <!-- 标签行：交互和包 chip 一样，但两者是独立维度（包 = 单归属，标签 = 多对多），
+             所以分两行放、可以叠加。库里一个标签都没有时整行藏起来（见 SendPanelController）。 -->
+        <LinearLayout
+            android:id="@+id/sendPanelTagRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:text="@string/overlay_panel_tag_label"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <HorizontalScrollView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/sendPanelTagChips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="8dp" />
+            </HorizontalScrollView>
+        </LinearLayout>
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"

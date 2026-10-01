@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  扁平猫脸：设计稿 icon.png（32×32，只有 6 种颜色）逐像素重建成矢量。
+  为什么要转矢量：设计稿只有 32×32，悬浮球最大 64dp（xxhdpi 就是 192px），
+  位图放大会糊掉 6 倍；矢量在球上、在启动图标里都是按需缩放，边缘永远是干净的。
+
+  坐标系与设计稿完全一致（每格 1 单位），色值也照抄：
+    #FF99DF 左轮廓 / 右耳内边 / 右眼      #99DFFF 右轮廓 / 左耳内边 / 左眼
+    #FFFFFF 脸与耳朵                      #444444 嘴（13 个 1×1 方块）
+    #888888 整只猫往右下各错 1 格的投影（白脸在白底上也能看出边）
+  启动图标的前景见 drawable/ic_launcher_foreground.xml（同一批方块，外面套了缩放）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+
+    <!-- 中灰投影：猫的剪影往右下各错 1 格，所以只看得见右侧、下边，和左耳右边那一小段。
+         画在最底下；它一格都不和别的色块重叠，放前放后看不出差别，纯粹是语义上该在后。 -->
+    <path
+        android:fillColor="#FF888888"
+        android:pathData="M29,4h1v25h-1zM9,4h1v5h-1zM4,29h26v1h-26z" />
+    <!-- 脸 + 两只耳朵（设计稿里这几处就是纯白，没有描边） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,3h4v6h-4zM24,3h4v6h-4zM4,9h24v20h-24z" />
+    <!-- 粉色：左轮廓、右耳内边、右眼（右眼第 2 行比其余行窄一格，照设计稿保留） -->
+    <path
+        android:fillColor="#FFFF99DF"
+        android:pathData="M3,3h1v26h-1zM23,3h1v6h-1zM21,13h3v1h-3zM21,14h2v1h-2zM21,15h3v3h-3z" />
+    <!-- 蓝色：右轮廓、左耳内边、左眼（同上，第 2 行窄一格） -->
+    <path
+        android:fillColor="#FF99DFFF"
+        android:pathData="M28,3h1v26h-1zM8,3h1v6h-1zM8,13h3v1h-3zM8,14h2v1h-2zM8,15h3v3h-3z" />
+    <!-- 嘴：ω 形 -->
+    <path
+        android:fillColor="#FF444444"
+        android:pathData="M12,20h1v1h-1zM15,20h1v1h-1zM18,20h1v1h-1zM12,21h1v1h-1zM14,21h1v1h-1zM16,21h1v1h-1zM18,21h1v1h-1zM12,22h1v1h-1zM14,22h1v1h-1zM16,22h1v1h-1zM18,22h1v1h-1zM13,23h1v1h-1zM17,23h1v1h-1z" />
+</vector>

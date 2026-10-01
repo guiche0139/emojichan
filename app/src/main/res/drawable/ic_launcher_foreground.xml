@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标的前景。里面的方块和 drawable/ic_cat_face.xml 是同一批（都来自设计稿 icon.png，
+  含右下那道中灰投影），改图时两个文件一起改。
+
+  画布故意写成 108dp×108dp：自适应图标就是这个尺寸，缩放交给下面的 group，
+  免得系统再去猜「这个 drawable 的固有尺寸比画布小，要不要放大」。
+  group 的 2.6 倍 + 12.4 平移 = 猫脸占画布 62.6%，与旧图标（前景 PNG 里猫脸占 62.4%）对齐，
+  换图前后启动器上的图标一样大；圆形/方形遮罩裁掉的是四角，和以前一样。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="2.6"
+        android:scaleY="2.6"
+        android:translateX="12.4"
+        android:translateY="12.4">
+        <path
+            android:fillColor="#FF888888"
+            android:pathData="M29,4h1v25h-1zM9,4h1v5h-1zM4,29h26v1h-26z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M4,3h4v6h-4zM24,3h4v6h-4zM4,9h24v20h-24z" />
+        <path
+            android:fillColor="#FFFF99DF"
+            android:pathData="M3,3h1v26h-1zM23,3h1v6h-1zM21,13h3v1h-3zM21,14h2v1h-2zM21,15h3v3h-3z" />
+        <path
+            android:fillColor="#FF99DFFF"
+            android:pathData="M28,3h1v26h-1zM8,3h1v6h-1zM8,13h3v1h-3zM8,14h2v1h-2zM8,15h3v3h-3z" />
+        <path
+            android:fillColor="#FF444444"
+            android:pathData="M12,20h1v1h-1zM15,20h1v1h-1zM18,20h1v1h-1zM12,21h1v1h-1zM14,21h1v1h-1zM16,21h1v1h-1zM18,21h1v1h-1zM12,22h1v1h-1zM14,22h1v1h-1zM16,22h1v1h-1zM18,22h1v1h-1zM13,23h1v1h-1zM17,23h1v1h-1z" />
+    </group>
+</vector>

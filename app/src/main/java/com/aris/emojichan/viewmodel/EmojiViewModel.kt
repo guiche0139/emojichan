@@ -1,11 +1,16 @@
 package com.aris.emojichan.viewmodel
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
+import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
+import com.aris.emojichan.data.SearchMode
+import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.util.FolderImporter
 import com.aris.emojichan.util.ImageUtil
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,8 +34,22 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _selectedCategory = MutableStateFlow("全部")
-    val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
+    /**
+     * 只看收藏。
+     *
+     * 收藏不是数据库里的一行标签，而是表情自身的 `isFavorite` 列 —— 星标一摘，收藏
+     * 里就该没有它，两者永远是同一件事。界面上它和标签并排显示，是筛选条件之一。
+     */
+    private val _favoritesOnly = MutableStateFlow(false)
+    val favoritesOnly: StateFlow<Boolean> = _favoritesOnly.asStateFlow()
+
+    /** 过滤区里勾中的标签。 */
+    private val _selectedTagIds = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedTagIds: StateFlow<Set<Long>> = _selectedTagIds.asStateFlow()
+
+    /** true = 同时满足所有标签（AND），false = 任一满足（OR）。 */
+    private val _tagMatchAll = MutableStateFlow(true)
+    val tagMatchAll: StateFlow<Boolean> = _tagMatchAll.asStateFlow()
 
     private val _isSelectionMode = MutableStateFlow(false)
     val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
@@ -37,20 +57,36 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
 
-    val emojis: StateFlow<List<EmojiEntity>> = combine(_searchQuery, _selectedCategory) { query, category ->
-        query to category
-    }.flatMapLatest { (query, category) ->
-        when {
-            query.isBlank() && category == "全部" -> repository.getAllEmojis()
-            query.isBlank() && category == "收藏" -> repository.getFavorites()
-            query.isBlank() -> repository.getByCategory(category)
-            category == "收藏" -> repository.searchFavorites(query)
-            category == "全部" -> repository.search(query)
-            else -> repository.searchInCategory(query, category)
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    /**
+     * 列表数据：收藏 / 关键词（普通、`$TAG:`）/ 标签 的组合过滤。
+     *
+     * 只有一条查询路径（[EmojiRepository.observeFiltered]），不再按条件分支挑不同的
+     * DAO 方法 —— 条件一多，分支写法会有十几套重复语义。
+     */
+    val emojis: StateFlow<List<EmojiEntity>> = combine(
+        _searchQuery,
+        _selectedTagIds,
+        _tagMatchAll,
+        _favoritesOnly
+    ) { query, tagIds, matchAll, favoritesOnly ->
+        val (mode, keyword) = EmojiFilter.parseQuery(query)
+        EmojiFilter(
+            favoritesOnly = favoritesOnly,
+            keyword = keyword,
+            searchMode = mode,
+            tagIds = tagIds.toList(),
+            tagMatchAll = matchAll
+        )
+    }.flatMapLatest { filter -> repository.observeFiltered(filter) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val categories: StateFlow<List<String>> = repository.getAllCategories()
+    /** 搜索框当前处于哪种模式，UI 用它显示「按名称搜索 / 按标签搜索」提示。 */
+    val searchMode: StateFlow<SearchMode> = _searchQuery
+        .map { query -> EmojiFilter.parseQuery(query).first }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SearchMode.NAME)
+
+    /** 全部标签，过滤区与标签管理都用它。 */
+    val tags: StateFlow<List<TagEntity>> = repository.observeTags()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val emojiCount: StateFlow<Int> = repository.getCount()
@@ -108,8 +144,28 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         _searchQuery.value = query
     }
 
-    fun setSelectedCategory(category: String) {
-        _selectedCategory.value = category
+    // ---------- 筛选 ----------
+
+    fun setFavoritesOnly(only: Boolean) {
+        _favoritesOnly.value = only
+    }
+
+    fun toggleFavoritesOnly() {
+        _favoritesOnly.value = !_favoritesOnly.value
+    }
+
+    fun toggleTagFilter(tagId: Long) {
+        val current = _selectedTagIds.value.toMutableSet()
+        if (!current.add(tagId)) current.remove(tagId)
+        _selectedTagIds.value = current
+    }
+
+    fun clearTagFilter() {
+        _selectedTagIds.value = emptySet()
+    }
+
+    fun setTagMatchAll(matchAll: Boolean) {
+        _tagMatchAll.value = matchAll
     }
 
     fun toggleSelectionMode() {
@@ -138,29 +194,71 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         _selectedIds.value = emptySet()
     }
 
-    fun insertEmoji(emoji: EmojiEntity) {
-        // 写库失败（磁盘满、约束冲突）必须自己接住：裸 launch 里抛出的异常
-        // 会直接走到默认异常处理器上，把整个应用崩掉（emc-1-022）。
-        viewModelScope.launch(handler) {
-            try {
-                repository.insert(emoji)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _message.value =
-                    str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
-            }
+    // ---------- 导入 ----------
+
+    /**
+     * 导入一张表情，并等它真正落库（名字去重与自动标签都在数据层的事务里完成）。
+     * @return 新记录的 id，失败返回 null。
+     */
+    suspend fun importEmoji(emoji: EmojiEntity): Long? = withContext(Dispatchers.IO) {
+        try {
+            repository.insert(emoji)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            _message.value =
+                str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
+            null
         }
     }
 
-    fun insertAll(emojis: List<EmojiEntity>) {
-        viewModelScope.launch(handler) {
+    /**
+     * 批量导入（一次选多张图）。
+     * @param tagId 非空时给这一批表情全部挂上该标签（文件夹导入用）。
+     * @return 成功入库的条数。
+     */
+    suspend fun insertAll(emojis: List<EmojiEntity>, tagId: Long? = null): Int =
+        withContext(Dispatchers.IO) {
             try {
-                repository.insertAll(emojis)
+                repository.insertAll(emojis, listOfNotNull(tagId)).count { it > 0 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                _message.value =
-                    str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
+                _message.value = str(
+                    R.string.msg_operation_failed,
+                    e.message ?: str(R.string.msg_unknown_error)
+                )
+                0
             }
+        }
+
+    /**
+     * 文件夹导入：递归读 [treeUri] 下的所有图片，**每层文件夹各建一个以自己名字命名的标签**
+     * （重名按加 (1)(2)… 处理），图片同时挂上从最外层到它所在这一层的全部标签。
+     *
+     * 整个过程在 IO 线程上跑，读完再一次性入库；标签只在第一次遇到时创建，同一个文件夹
+     * 里的图片共用同一个标签 id。
+     *
+     * @return 成功入库的条数；无法读取该文件夹返回 -1。
+     */
+    suspend fun importFolder(treeUri: Uri): Int = withContext(Dispatchers.IO) {
+        try {
+            val batches = FolderImporter.collect(getApplication(), treeUri) ?: return@withContext -1
+            val tagIds = mutableMapOf<String, Long>()
+            var imported = 0
+            batches.forEach { batch ->
+                val ids = batch.tagNames.mapNotNull { name ->
+                    tagIds.getOrPut(name) { repository.createUniqueTag(name) ?: -1L }
+                        .takeIf { it > 0 }
+                }
+                if (batch.emojis.isNotEmpty()) {
+                    imported += repository.insertAll(batch.emojis, ids).count { it > 0 }
+                }
+            }
+            imported
+        } catch (e: Exception) {
+            e.printStackTrace()
+            _message.value =
+                str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
+            0
         }
     }
 
@@ -212,7 +310,7 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     /** 详情页数据源：以数据库为唯一真值，避免在页面间搬运残缺实体。 */
     fun observeEmoji(id: Long): Flow<EmojiEntity?> = repository.observeById(id)
 
-    /** 精准更新收藏状态：只写一列，不会覆盖 tags / usageCount 等其它字段。 */
+    /** 精准更新收藏状态：只写一列，不会覆盖 usageCount 等其它字段。 */
     fun updateFavorite(id: Long, isFavorite: Boolean) {
         viewModelScope.launch(handler) {
             try {
@@ -251,12 +349,15 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 重命名；失败或影响行数为 0 时通过 [message] 反馈，UI 会回灌数据库真值。 */
     fun renameEmoji(id: Long, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) {
+            _message.value = str(R.string.msg_name_empty)
+            return
+        }
         launchWrite(str(R.string.msg_rename_failed_missing)) {
-            repository.rename(id, newName)
+            repository.rename(id, trimmed)
         }
     }
-
-    // ---------- 分类管理 ----------
 
     /** 统一收口「返回一句提示」的异步操作；返回 null 表示无需提示。 */
     private fun launchAction(block: suspend () -> String?) {
@@ -273,39 +374,97 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addCategory(name: String) = launchAction {
-        if (repository.insertCategory(name)) {
-            str(R.string.msg_category_created, name)
+    // ---------- 批量整理（选择模式） ----------
+
+    /** 给选中的表情批量打上已有标签。 */
+    fun addTagsToSelected(tagIds: List<Long>) = launchAction {
+        val ids = _selectedIds.value.toList()
+        if (ids.isEmpty()) return@launchAction str(R.string.msg_nothing_selected)
+        if (tagIds.isEmpty()) return@launchAction str(R.string.msg_tag_none_selected)
+        repository.addTags(ids, tagIds)
+        str(R.string.msg_tags_added, ids.size)
+    }
+
+    /** 给选中的表情批量打上一个新标签（不存在就建）。 */
+    fun addNewTagToSelected(name: String) = launchAction {
+        val ids = _selectedIds.value.toList()
+        if (ids.isEmpty()) return@launchAction str(R.string.msg_nothing_selected)
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return@launchAction str(R.string.tag_name_empty)
+        val tagId = repository.ensureTag(trimmed)
+            ?: return@launchAction str(R.string.msg_tag_create_failed, trimmed)
+        repository.addTags(ids, listOf(tagId))
+        str(R.string.msg_tags_added, ids.size)
+    }
+
+    /** 从选中的表情上批量摘掉标签。 */
+    fun removeTagsFromSelected(tagIds: List<Long>) = launchAction {
+        val ids = _selectedIds.value.toList()
+        if (ids.isEmpty()) return@launchAction str(R.string.msg_nothing_selected)
+        if (tagIds.isEmpty()) return@launchAction str(R.string.msg_tag_none_selected)
+        repository.removeTags(ids, tagIds)
+        str(R.string.msg_tags_removed, ids.size)
+    }
+
+    // ---------- 标签管理 ----------
+
+    fun addTag(name: String) = launchAction {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return@launchAction str(R.string.tag_name_empty)
+        if (repository.insertTag(trimmed)) {
+            str(R.string.msg_tag_created, trimmed)
         } else {
-            str(R.string.msg_category_exists, name)
+            str(R.string.msg_tag_exists, trimmed)
         }
     }
 
-    fun renameCategory(oldName: String, newName: String) = launchAction {
-        when {
-            repository.renameCategory(oldName, newName) -> {
-                // 当前正停在这个分类上就跟着改名，否则列表会突然变空
-                if (_selectedCategory.value == oldName) _selectedCategory.value = newName
-                str(R.string.msg_category_renamed, newName)
-            }
-            categories.value.contains(oldName) -> str(R.string.msg_category_exists, newName)
-            else -> str(R.string.msg_category_rename_missing, oldName)
-        }
-    }
-
-    /** 删除分类；分类下的表情改挂到「默认」，不会被一起删掉。 */
-    fun deleteCategory(name: String) = launchAction {
-        if (repository.deleteCategory(name, DEFAULT_CATEGORY)) {
-            if (_selectedCategory.value == name) _selectedCategory.value = CATEGORY_ALL
-            str(R.string.msg_category_deleted, name)
+    /** 重命名标签；新名字与别的标签撞车时拒绝，避免两个同名标签让人无法区分。 */
+    fun renameTag(tagId: Long, oldName: String, newName: String) = launchAction {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return@launchAction str(R.string.tag_name_empty)
+        if (trimmed == oldName) return@launchAction null
+        if (repository.renameTag(tagId, trimmed)) {
+            str(R.string.msg_tag_renamed, oldName, trimmed)
         } else {
-            str(R.string.msg_category_delete_missing, name)
+            str(R.string.msg_tag_exists, trimmed)
         }
     }
 
-    private companion object {
-        /** 删除分类时，该分类下的表情改挂到这里，保证表情不跟着消失。 */
-        const val DEFAULT_CATEGORY = "默认"
-        const val CATEGORY_ALL = "全部"
+    /** 删除标签：它下面所有表情的挂载一起摘掉，表情本身不受影响。 */
+    fun deleteTag(tagId: Long, tagName: String) = launchAction {
+        if (repository.deleteTag(tagId)) {
+            // 正被当筛选条件用的标签没了，条件也要跟着撤掉，否则列表永远是空
+            _selectedTagIds.value = _selectedTagIds.value - tagId
+            str(R.string.msg_tag_deleted, tagName)
+        } else {
+            str(R.string.msg_tag_delete_missing, tagName)
+        }
+    }
+
+    // ---------- 详情页标签编辑 ----------
+
+    /**
+     * 一次性取回全部标签（按名字排序）。
+     *
+     * [tags] 是 `WhileSubscribed` 的 StateFlow：没有人收集它时 `.value` 会一直是初始的空列表。
+     * 详情页从不订阅它，所以那里要列标签必须走这个「取一次」的入口，不能读 `.value`。
+     */
+    suspend fun allTagsOnce(): List<TagEntity> = withContext(Dispatchers.IO) { repository.getTags() }
+
+    fun observeTagsOf(emojiId: Long): Flow<List<TagEntity>> = repository.observeTagsOf(emojiId)
+
+    /** 添加一个标签到某张表情（不存在就建）。 */
+    fun addTagToEmoji(emojiId: Long, name: String) = launchAction {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return@launchAction str(R.string.tag_name_empty)
+        val tagId = repository.ensureTag(trimmed)
+            ?: return@launchAction str(R.string.msg_tag_create_failed, trimmed)
+        repository.addTags(listOf(emojiId), listOf(tagId))
+        str(R.string.msg_tag_added_to_emoji, trimmed)
+    }
+
+    fun removeTagFromEmoji(emojiId: Long, tagId: Long) = launchAction {
+        repository.removeTags(listOf(emojiId), listOf(tagId))
+        null
     }
 }

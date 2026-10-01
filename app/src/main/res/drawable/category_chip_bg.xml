@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#EEEEEE" />
+    <!-- 未选中的 chip：用主题里的 surface_variant，深浅色都跟着走。
+         以前写死 #EEEEEE —— 深色模式下就是浅灰底配浅色字，选没选中分不清。 -->
+    <solid android:color="@color/surface_variant" />
+    <stroke
+        android:width="1dp"
+        android:color="@color/divider" />
     <corners android:radius="16dp" />
 </shape>

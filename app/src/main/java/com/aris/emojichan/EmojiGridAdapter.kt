@@ -21,8 +21,7 @@ class EmojiGridAdapter(
     private val onEmojiLongClick: (EmojiEntity) -> Unit,
     private val onFavoriteClick: (EmojiEntity) -> Unit,
     private val isSelectionMode: () -> Boolean,
-    private val selectedIds: () -> Set<Long>,
-    private val onCopyClick: (EmojiEntity) -> Unit
+    private val selectedIds: () -> Set<Long>
 ) : ListAdapter<EmojiEntity, EmojiGridAdapter.ViewHolder>(DiffCallback()) {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -30,7 +29,6 @@ class EmojiGridAdapter(
         val favoriteIcon: ImageView = view.findViewById(R.id.favoriteIcon)
         val checkBox: CheckBox = view.findViewById(R.id.checkBox)
         val emojiName: TextView = view.findViewById(R.id.emojiName)
-        val copyButton: TextView = view.findViewById(R.id.copyButton)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -67,12 +65,6 @@ class EmojiGridAdapter(
         // 会把点击吞掉 —— 原来只把自己勾上，选中集合不更新，于是删掉的不是用户以为的那批（emc-1-020）。
         holder.checkBox.setOnClickListener { onEmojiClick(emoji) }
 
-        // 复制按钮：多选模式下让位给勾选框
-        holder.copyButton.visibility = if (selectionMode) View.GONE else View.VISIBLE
-        holder.copyButton.setOnClickListener {
-            onCopyClick(emoji)
-        }
-
         // Click listeners
         holder.itemView.setOnClickListener {
             onEmojiClick(emoji)
@@ -93,4 +85,5 @@ class EmojiGridAdapter(
             return oldItem == newItem
         }
     }
+
 }

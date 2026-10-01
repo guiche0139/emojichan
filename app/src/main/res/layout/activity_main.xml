@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
@@ -67,20 +68,66 @@
                 android:textColorHint="@color/text_secondary"
                 android:textSize="15sp" />
 
-            <HorizontalScrollView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:clipToPadding="false"
-                android:paddingHorizontal="12dp"
-                android:scrollbars="none">
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-                <LinearLayout
-                    android:id="@+id/categoryContainer"
+                <!-- 展开按钮放最左边：这里是全部标签的入口，筛选条只显示正在生效的那几个 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnExpandTags"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="12dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="12dp"
+                    android:text="@string/tag_panel_title"
+                    android:textSize="13sp"
+                    app:icon="@android:drawable/ic_menu_sort_by_size"
+                    app:iconGravity="textStart"
+                    app:iconPadding="6dp"
+                    app:iconSize="18dp" />
+
+                <HorizontalScrollView
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal" />
-            </HorizontalScrollView>
+                    android:layout_weight="1"
+                    android:clipToPadding="false"
+                    android:paddingHorizontal="8dp"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/filterContainer"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+            </LinearLayout>
+
+            <!-- 标签面板：点左边的按钮展开，所有标签在这里以网格排列；收起时完全不占地方 -->
+            <ScrollView
+                android:id="@+id/tagPanelScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:paddingHorizontal="12dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/tagGrid"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    app:chipSpacingHorizontal="8dp"
+                    app:chipSpacingVertical="2dp"
+                    app:singleLine="false"
+                    app:singleSelection="false" />
+            </ScrollView>
 
             <FrameLayout
                 android:layout_width="match_parent"
@@ -150,6 +197,17 @@
                     app:cornerRadius="14dp" />
 
                 <Button
+                    android:id="@+id/btnOrganize"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="4dp"
+                    android:layout_weight="1"
+                    android:text="@string/btn_organize"
+                    android:visibility="gone"
+                    app:cornerRadius="14dp" />
+
+                <Button
                     android:id="@+id/btnCancel"
                     style="@style/Widget.Material3.Button.TextButton"
                     android:layout_width="0dp"
@@ -211,18 +269,9 @@
                             android:paddingHorizontal="14dp"
                             android:paddingVertical="12dp">
 
-                            <TextView
-                                android:layout_width="40dp"
-                                android:layout_height="40dp"
-                                android:background="@drawable/bg_icon_chip"
-                                android:gravity="center"
-                                android:text="😀"
-                                android:textSize="18sp" />
-
                             <LinearLayout
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="12dp"
                                 android:layout_weight="1"
                                 android:orientation="vertical">
 
@@ -264,18 +313,9 @@
                             android:paddingHorizontal="14dp"
                             android:paddingVertical="12dp">
 
-                            <TextView
-                                android:layout_width="40dp"
-                                android:layout_height="40dp"
-                                android:background="@drawable/bg_icon_chip"
-                                android:gravity="center"
-                                android:text="⚙"
-                                android:textSize="18sp" />
-
                             <LinearLayout
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="12dp"
                                 android:layout_weight="1"
                                 android:orientation="vertical">
 
@@ -302,6 +342,150 @@
                                 android:textColor="@color/text_secondary"
                                 android:textSize="12sp" />
                         </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="66dp"
+                            android:background="@color/divider" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_confirm_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:text="@string/settings_confirm_sub"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <com.google.android.material.materialswitch.MaterialSwitch
+                                android:id="@+id/switchAutoConfirm"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/confirmHint"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:paddingStart="66dp"
+                            android:paddingEnd="14dp"
+                            android:paddingBottom="12dp"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="66dp"
+                            android:background="@color/divider" />
+
+                        <LinearLayout
+                            android:id="@+id/rowBallApps"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_ball_apps_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:id="@+id/ballAppsValue"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/settings_row_more"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="66dp"
+                            android:background="@color/divider" />
+
+                        <LinearLayout
+                            android:id="@+id/rowAddTile"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_tile_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:id="@+id/tileState"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/settings_row_more"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 
@@ -310,7 +494,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_marginTop="20dp"
-                    android:text="@string/settings_section_gif"
+                    android:text="@string/settings_section_route"
                     android:textAppearance="@style/EmojiChan.SectionLabel" />
 
                 <com.google.android.material.card.MaterialCardView
@@ -329,32 +513,87 @@
                         android:orientation="vertical"
                         android:padding="14dp">
 
-                        <com.google.android.material.button.MaterialButtonToggleGroup
-                            android:id="@+id/gifToggle"
+                        <TextView
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
+                            android:text="@string/settings_route_title"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp" />
+
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:id="@+id/routeToggle"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
                             app:selectionRequired="true"
                             app:singleSelection="true">
 
                             <Button
-                                android:id="@+id/btnGifShare"
+                                android:id="@+id/btnRouteAlbum"
                                 style="?attr/materialButtonOutlinedStyle"
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="@string/settings_gif_share" />
+                                android:text="@string/settings_route_album" />
 
                             <Button
-                                android:id="@+id/btnGifAlbum"
+                                android:id="@+id/btnRouteShare"
                                 style="?attr/materialButtonOutlinedStyle"
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="@string/settings_gif_album" />
+                                android:text="@string/settings_route_share" />
                         </com.google.android.material.button.MaterialButtonToggleGroup>
 
                         <TextView
-                            android:id="@+id/gifHint"
+                            android:id="@+id/routeHint"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginTop="14dp"
+                            android:background="@color/divider" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:text="@string/settings_wechat_image_title"
+                            android:textColor="@color/text_primary"
+                            android:textSize="15sp" />
+
+                        <com.google.android.material.button.MaterialButtonToggleGroup
+                            android:id="@+id/wechatImageToggle"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            app:selectionRequired="true"
+                            app:singleSelection="true">
+
+                            <Button
+                                android:id="@+id/btnWechatImageInherit"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="@string/settings_wechat_image_inherit" />
+
+                            <Button
+                                android:id="@+id/btnWechatImageClipboard"
+                                style="?attr/materialButtonOutlinedStyle"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="@string/settings_wechat_image_clipboard" />
+                        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                        <TextView
+                            android:id="@+id/wechatImageHint"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="10dp"
@@ -504,18 +743,9 @@
                             android:paddingHorizontal="14dp"
                             android:paddingVertical="12dp">
 
-                            <TextView
-                                android:layout_width="40dp"
-                                android:layout_height="40dp"
-                                android:background="@drawable/bg_icon_chip"
-                                android:gravity="center"
-                                android:text="🖼"
-                                android:textSize="18sp" />
-
                             <LinearLayout
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="12dp"
                                 android:layout_weight="1"
                                 android:orientation="vertical">
 
@@ -558,17 +788,8 @@
                             android:paddingTop="12dp">
 
                             <TextView
-                                android:layout_width="40dp"
-                                android:layout_height="40dp"
-                                android:background="@drawable/bg_icon_chip"
-                                android:gravity="center"
-                                android:text="📏"
-                                android:textSize="18sp" />
-
-                            <TextView
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="12dp"
                                 android:layout_weight="1"
                                 android:text="@string/settings_ball_size_title"
                                 android:textColor="@color/text_primary"
@@ -631,18 +852,9 @@
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="12dp">
 
-                        <TextView
-                            android:layout_width="40dp"
-                            android:layout_height="40dp"
-                            android:background="@drawable/bg_icon_chip"
-                            android:gravity="center"
-                            android:text="📋"
-                            android:textSize="18sp" />
-
                         <LinearLayout
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:layout_marginStart="12dp"
                             android:layout_weight="1"
                             android:orientation="vertical">
 
@@ -669,6 +881,7 @@
                             android:textColor="@color/text_secondary"
                             android:textSize="18sp" />
                     </LinearLayout>
+
                 </com.google.android.material.card.MaterialCardView>
 
                 <TextView
@@ -726,7 +939,7 @@
                                 android:layout_marginTop="2dp"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="12sp" />
-                        </LinearLayout>
+                    </LinearLayout>
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
             </LinearLayout>
@@ -740,4 +953,4 @@
         android:background="@color/surface"
         app:labelVisibilityMode="labeled"
         app:menu="@menu/menu_bottom" />
-</LinearLayout>
+                    </LinearLayout>

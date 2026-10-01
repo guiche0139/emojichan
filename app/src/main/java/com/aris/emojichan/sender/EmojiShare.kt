@@ -6,6 +6,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.FileProvider
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
@@ -190,6 +192,24 @@ object EmojiShare {
             }
         }
         SendLog.d("剪贴板", "已收回上一次的临时读权限")
+    }
+
+    /** 延后收回读权限用的 handler：只抓着 applicationContext，不抓着哪个界面。 */
+    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * 隔 [delayMs] 之后再收回读权限。
+     *
+     * 为什么不能像以前那样一读完就收：点掉「发送」只是把这一下点击交给微信，它去读图是在
+     * 那之后（自己的线程 + 解码 + 压缩）。用户实测（v0.1.321）里授权在点击后 4ms 就被收回，
+     * 结果是界面回到了聊天页、图却没发出去（emc-2-015）。留给用户自己点的那种情况更慢，
+     * 所以那个窗口要留得更久。期间又复制了别的图（grantedUri 换人了）就不再动它。
+     */
+    fun releaseClipboardGrantsLater(context: Context, delayMs: Long) {
+        val uri = grantedUri ?: return
+        val app = context.applicationContext
+        handler.postDelayed({ if (grantedUri == uri) releaseClipboardGrants(app) }, delayMs)
+        SendLog.d("剪贴板", "读权限先留着，过 " + delayMs / 1000 + " 秒再收回")
     }
 
     /**

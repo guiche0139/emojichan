@@ -1,8 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.ksp)
 }
+
+// 正式签名：密钥库在 keystore/（.gitignore 挡着，绝不入库），口令在同目录之外的 keystore.properties。
+// 找不到 keystore.properties 或密钥库文件时（比如别人 clone 下来），就不配置签名 —— release 退化成未签名包，
+// 但编译本身不受影响。这样别人也能 build，只是产不出能覆盖安装的包。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+val releaseStoreFile = keystoreProps.getProperty("storeFile")?.let { rootProject.file(it) }
+val hasReleaseKey = releaseStoreFile != null && releaseStoreFile.exists()
 
 android {
     namespace = "com.aris.emojichan"
@@ -14,19 +26,33 @@ android {
         targetSdk = 34
         // 版本号规则：0.1.N —— 每构建一版把 N 加一（0.1.210 → 0.1.211）。
         // versionCode 跟 N 保持一致，装新版才能覆盖旧版；APK 文件名会带上 versionName。
-        versionCode = 305
-        versionName = "0.1.305"
+        versionCode = 400
+        versionName = "0.1.400"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            // R8 暂时不开：本项目没有反射/动态取资源，开了大概率没问题，但没实测过就不在发布版上冒险。
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 正式密钥签名：换了密钥，装过旧版（debug 签名）的机器必须先卸载，数据会丢（allowBackup=false）。
+            if (hasReleaseKey) signingConfig = signingConfigs.getByName("release")
         }
     }
 

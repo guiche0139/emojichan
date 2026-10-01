@@ -7,7 +7,6 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "emojis",
     indices = [
-        Index(value = ["category"]),
         Index(value = ["source"]),
         Index(value = ["isFavorite"])
     ]
@@ -17,8 +16,6 @@ data class EmojiEntity(
     val name: String,
     val filePath: String,
     val fileType: String,
-    val category: String = "默认",
-    val tags: String = "",
     val source: String = "local",
     val isFavorite: Boolean = false,
     val usageCount: Int = 0,

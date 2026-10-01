@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">表情包助手</string>
-    <string name="search_hint">搜索表情...</string>
+    <string name="app_name">Emojichan</string>
+    <string name="search_hint">搜索表情名或标签</string>
+    <string name="filter_all">全部</string>
+    <string name="filter_favorites">收藏</string>
+    <string name="tag_panel_title">标签</string>
+    <string name="tag_panel_empty">暂无标签</string>
+    <string name="tag_rename_title">重命名标签</string>
+    <string name="search_hint_tag">按标签搜索（$TAG:标签名）</string>
     <string name="tab_all">全部</string>
     <string name="tab_favorites">收藏</string>
 
@@ -14,19 +20,7 @@
     <string name="btn_cancel_select">取消选择</string>
     <string name="btn_delete_count">删除 (%1$d)</string>
 
-    <!-- 分类 -->
-    <string name="btn_manage_category">＋ 管理</string>
-    <string name="btn_add_category">+ 添加</string>
-    <string name="dialog_category_title">新建分类</string>
-    <string name="dialog_category_hint">输入分类名称</string>
-    <string name="category_manage_title">分类管理</string>
-    <string name="category_manage_empty">还没有自定义分类，新建一个吧</string>
-    <string name="category_rename_title">重命名分类</string>
-    <string name="category_delete_title">删除分类</string>
-    <string name="category_delete_message">分类「%1$s」下的表情会移动到「默认」分类，不会被删除。</string>
-    <string name="category_default_immutable">「默认」分类不能删除</string>
-    <string name="category_name_empty">分类名称不能为空</string>
-    <string name="category_manage_create">新建分类</string>
+    <!-- 标签（原来分「包」和「标签」两套，现在只剩标签） -->
 
     <!-- 通用对话框 -->
     <string name="dialog_confirm">确认</string>
@@ -45,12 +39,32 @@
     <!-- 权限与导入 -->
     <string name="toast_import_success">导入成功</string>
     <string name="toast_import_failed">导入失败</string>
+    <string name="import_progress_title">正在导入</string>
+    <string name="import_progress_format">正在导入第 %1$d / %2$d 张…</string>
+    <string name="import_result_ok">已导入 %1$d 张表情</string>
+    <string name="import_name_fallback">图片 %1$s</string>
+    <string name="import_result_partial">已导入 %1$d 张，%2$d 张失败</string>
+    <string name="import_continue">再导入一批</string>
+    <string name="import_source_title">导入来源</string>
+    <string name="import_source_album">从相册导入（可多选）</string>
+    <string name="import_source_files">从文件导入（文件名与原文件一致）</string>
+    <string name="import_source_folder">从文件夹导入（按文件夹名打标签）</string>
+    <string name="import_folder_progress_title">正在导入文件夹</string>
+    <string name="import_folder_progress_message">导入过程中请不要退出应用。</string>
+    <string name="import_folder_result">已从文件夹导入 %1$d 张</string>
+    <string name="import_folder_empty">文件夹里没有图片</string>
+    <string name="import_folder_unreadable">无法打开这个文件夹</string>
+    <string name="import_folder_default_name">文件夹</string>
+    <string name="import_use_files">从文件导入</string>
+    <string name="import_grant_media">允许读取相册（导入时用原文件名）</string>
+    <string name="import_grant_media_short">允许读取相册</string>
+    <string name="import_grant_media_result">相册权限：%1$s</string>
     <string name="emoji_default_name">表情 %1$d</string>
 
     <!-- 详情页 -->
     <string name="detail_not_found">表情不存在</string>
-    <string name="detail_info">分类: %1$s | 大小: %2$s%3$s | 添加于: %4$s</string>
-    <string name="detail_size_suffix"> | 尺寸: %1$d×%2$d</string>
+    <string name="detail_info">格式 %1$s%2$s · 大小 %3$s · 添加于 %4$s</string>
+    <string name="detail_size_suffix"> · %1$d×%2$d</string>
     <string name="btn_favorite">收藏</string>
     <string name="btn_unfavorite">取消收藏</string>
     <string name="rename_title">重命名</string>
@@ -62,7 +76,7 @@
     <string name="toast_favorite_removed">已取消收藏</string>
     <string name="error_image_load">图片加载失败</string>
     <string name="error_storage_full">存储空间不足</string>
-    <string name="empty_emoji_list">还没有表情，点击导入添加</string>
+    <string name="empty_emoji_list">暂无表情，点「导入」添加</string>
     <string name="msg_unknown_error">未知错误</string>
     <string name="msg_operation_failed">操作失败：%1$s</string>
     <string name="msg_delete_failed">删除失败：%1$s</string>
@@ -70,30 +84,40 @@
     <string name="msg_file_delete_failed">文件删除失败，已保留该表情</string>
     <string name="msg_record_missing">操作未生效，该表情可能已被删除</string>
     <string name="msg_rename_failed_missing">重命名失败，该表情可能已被删除</string>
-    <string name="msg_category_created">已创建分类「%1$s」</string>
-    <string name="msg_category_exists">分类「%1$s」已存在</string>
-    <string name="msg_category_renamed">已重命名为「%1$s」</string>
-    <string name="msg_category_rename_missing">重命名失败：分类「%1$s」不存在</string>
-    <string name="msg_category_deleted">已删除分类「%1$s」，原有表情已移动到「默认」</string>
-    <string name="msg_category_delete_missing">删除失败：分类「%1$s」不存在</string>
+    <string name="msg_nothing_selected">请先选择表情</string>
+    <string name="msg_name_empty">名字不能为空</string>
+    <string name="msg_tag_none_selected">还没有选择标签</string>
+    <string name="msg_tags_added">已给 %1$d 个表情添加标签</string>
+    <string name="msg_tags_removed">已给 %1$d 个表情移除标签</string>
+    <string name="msg_tag_created">已创建标签「%1$s」</string>
+    <string name="msg_tag_exists">标签「%1$s」已存在</string>
+    <string name="msg_tag_renamed">标签「%1$s」已重命名为「%2$s」</string>
+    <string name="msg_tag_deleted">已删除标签「%1$s」</string>
+    <string name="msg_tag_delete_missing">删除失败：标签「%1$s」不存在</string>
+    <string name="msg_tag_create_failed">创建标签「%1$s」失败</string>
+    <string name="msg_tag_added_to_emoji">已添加标签「%1$s」</string>
+    <string name="tag_name_empty">标签名不能为空</string>
 
 
     <!-- 发送模块 · 悬浮球与发送面板 -->
     <string name="overlay_ball_icon">😀</string>
     <string name="overlay_close_symbol">✕</string>
-    <string name="overlay_panel_title">选一个表情，直接分享到微信</string>
+    <string name="overlay_panel_title">选择表情</string>
     <string name="overlay_chip_recent">最近</string>
     <string name="overlay_chip_all">全部</string>
     <string name="overlay_chip_favorites">收藏</string>
-    <string name="overlay_empty">还没有表情，先回到应用里导入几张</string>
-    <string name="overlay_empty_recent">还没有发送过的表情，去「全部」里挑一个</string>
-    <string name="overlay_started">悬浮球已开启：只在微信和 QQ 里出现，点它选表情即可发送</string>
-    <string name="overlay_started_manual">悬浮球已开启。想让它只在微信和 QQ 里出现，还需要在系统设置里开启「表情自动发送」</string>
+    <string name="overlay_panel_tag_label">标签</string>
+    <string name="overlay_tag_none">不限</string>
+    <string name="overlay_empty">暂无表情，先在应用里导入</string>
+    <string name="overlay_empty_tag">这个标签下没有表情</string>
+    <string name="overlay_empty_recent">没有发送过的表情，可在「全部」里选择</string>
+    <string name="overlay_started">悬浮球已开启，在选定的应用里显示</string>
+    <string name="overlay_started_manual">悬浮球已开启。只在微信和 QQ 里显示需要先在系统设置里开启「表情自动发送」</string>
     <string name="overlay_stopped">悬浮球已关闭</string>
     <string name="overlay_permission_needed">需要先允许「显示在其他应用上层」</string>
-    <string name="overlay_permission_settings_unavailable">找不到悬浮窗权限设置页，请手动进入系统设置</string>
+    <string name="overlay_permission_settings_unavailable">无法打开悬浮窗权限设置页，请手动进入系统设置</string>
     <string name="overlay_send_failed">没有找到能接收图片的应用</string>
-    <string name="overlay_file_missing">这张表情的文件不见了，可能已被删除</string>
+    <string name="overlay_file_missing">图片文件不存在，可能已被删除</string>
     <string name="overlay_chooser_title">分享表情到…</string>
 
     <!-- 发送模块 · 自动选中聊天对象 -->
@@ -103,20 +127,29 @@
     <string name="overlay_auto_clicked">已发送给 %1$s</string>
     <string name="overlay_auto_failed">未自动选中「%1$s」，请在列表中选择</string>
     <string name="overlay_direct_failed">未能直接打开目标应用（%1$s），已改用系统分享</string>
-    <string name="auto_send_service_label">表情自动发送（发送模块）</string>
-    <string name="sender_status_on">✓ 已开启：球只在微信 / QQ 出现，选完表情会自动选中聊天对象</string>
-    <string name="sender_status_off">⚠ 未开启：悬浮球会一直显示，且不会自动选中聊天对象 · 点此前往系统设置</string>
-    <string name="sender_status_settings_unavailable">打不开系统无障碍设置，请手动到「设置 → 无障碍」里开启「表情自动发送」</string>
-    <string name="auto_send_service_description">这个服务做两件事：① 看当前前台应用是不是微信 / QQ，让表情悬浮球只在这两个应用里出现；② 在你点选表情后读一次聊天窗口标题，并在微信的「选择聊天」列表里选中同名的那一项。服务平时不读取屏幕内容，只在上面两个时机各读一次；本应用没有联网权限，所有数据都留在本机。</string>
-    <string name="overlay_auto_off">自动发送未开启，未自动选中聊天对象（在「设置 → 无障碍」中开启「表情自动发送」）</string>
+    <string name="auto_send_service_label">表情自动发送</string>
+    <string name="sender_status_on">✓ 已开启：选完表情后自动选中聊天对象（微信 / QQ）</string>
+    <string name="sender_status_off">⚠ 未开启：悬浮球在所有应用里显示，不自动选中聊天对象 · 点此前往系统设置</string>
+    <string name="sender_status_settings_unavailable">无法打开系统无障碍设置，请手动到「设置 → 无障碍」开启「表情自动发送」</string>
+    <string name="auto_send_service_description">用于两项操作：① 读取当前前台应用，据此决定悬浮球是否显示（显示范围由用户勾选）；② 在用户选完表情后读取一次聊天窗口标题，并在微信「选择聊天」列表里选中同名项。服务不在其他时机读取屏幕内容；应用无联网权限，数据只保存在本机。</string>
+    <string name="overlay_auto_off">未开启自动发送，未自动选中聊天对象（在「设置 → 无障碍」中开启「表情自动发送」）</string>
     <string name="overlay_auto_no_target">未识别出当前聊天对象，请在列表中选择</string>
-    <string name="overlay_unknown_app">没认出当前在哪个应用，已改用系统分享，请在面板里选微信或 QQ</string>
-    <string name="overlay_pasted">已用「粘贴」把表情放进输入框并点了发送</string>
-    <string name="overlay_paste_failed">没能把图片粘进输入框，已改用分享方式</string>
-    <string name="overlay_album_sent">已用「+ → 相册」把表情发出去</string>
-    <string name="overlay_album_failed">相册路线没走通，已改用分享方式</string>
-    <string name="gif_route_switched_share">已切换为「分享」：表情选好后在微信选人页选择聊天对象即可发送</string>
-    <string name="gif_route_switched_album">已切换为「+ → 相册」：发送路径为 + → 相册 → 第一格 → 发送</string>
+    <string name="overlay_unknown_app">未识别出当前应用，已改用系统分享，请在随后弹出的页面里选择应用</string>
+    <string name="overlay_pasted">已粘贴进输入框并点「发送」</string>
+    <string name="overlay_pasted_staged">表情已放进输入框，请点「发送」</string>
+    <string name="overlay_paste_failed">未能把图片粘贴进输入框，已改用分享</string>
+    <string name="overlay_pasted_already_sent">可能已发送，请在聊天里确认；如未收到可重新发送</string>
+    <string name="overlay_album_sent">已通过「+ → 相册」发送</string>
+    <string name="overlay_album_staged">图已选好并停在预览页，请点「发送 / 确定」</string>
+    <string name="overlay_album_already_sent">可能已发送，请在聊天里确认；如未收到可重新发送</string>
+    <string name="overlay_album_failed">相册方式未成功，已改用分享</string>
+    <string name="overlay_album_check_failed">相册里排第一的不是这张表情，已改用分享（原因见发送日志）</string>
+    <string name="overlay_album_check_unknown">未确认相册第一张是这张表情（缺少「读取相册」权限），仍按相册方式发送</string>
+    <string name="overlay_confirm_manual">已停在最后一步，按设置不自动点击，请自行点「发送 / 确定」</string>
+    <string name="route_switched_share">已改为「分享」：选完表情后在聊天列表里选择对象</string>
+    <string name="route_switched_album">已改为「相册」：选完表情后经应用的「＋ → 相册」发到当前聊天</string>
+    <string name="wechat_image_switched_inherit">微信里的图片：跟随全局方式</string>
+    <string name="wechat_image_switched_clipboard">微信里的图片：改用剪贴板粘贴</string>
     <string name="log_title">发送日志</string>
     <string name="log_copy">复制全部</string>
     <string name="log_share">分享</string>
@@ -124,48 +157,84 @@
     <string name="log_clear">清空</string>
     <string name="log_copied">已复制到剪贴板</string>
     <string name="log_cleared">已清空</string>
-    <string name="log_share_failed">打不开分享面板</string>
+    <string name="log_share_failed">无法打开分享面板</string>
     <string name="log_share_confirm_title">分享这 %1$d 行日志？</string>
-    <string name="log_share_confirm_message">日志里会带上操作过程；聊天对象名和输入框文字已经在写日志时就打码，只留指纹和字数。确认发给对方？</string>
-    <string name="log_empty">暂无记录。先在微信 / QQ 里点一次悬浮球、选一个表情，再回这里看。</string>
+    <string name="log_share_confirm_message">日志包含操作过程；聊天对象名与输入框文字不会原样记录，只保留长度等特征。确认发送？</string>
+    <string name="log_empty">暂无记录。在聊天应用里点悬浮球选一个表情后，这里会显示记录。</string>
 
-    <!-- 主界面 · 复制表情到剪贴板（用来手测微信认不认 GIF 剪贴板） -->
-    <string name="copy_short">复制</string>
-    <string name="copy_ok_toast">已把「%1$s」（%2$s）放进剪贴板
-在微信聊天中长按输入框 → 粘贴 → 发送，可确认是否仍为动图
-（发送日志 →「剪贴板自检」能看到这次到底交出去了什么）</string>
-    <string name="copy_fail_toast">复制失败：图片文件不在了，具体看「发送日志」里的「剪贴板」一行</string>
+    <!-- 表情详情页 · 复制到剪贴板 -->
+    <string name="btn_copy">复制到剪贴板</string>
+    <string name="copy_ok_toast">已复制「%1$s」（%2$s）到剪贴板，在聊天里长按输入框可粘贴</string>
+    <string name="copy_fail_toast">复制失败：图片文件不存在，详情见「发送日志」</string>
 
     <!-- 诊断：剪贴板取证（文件字节 / 系统剪贴板 / 接收方能取到什么） -->
     <string name="log_clip_check">剪贴板自检</string>
-    <string name="log_clip_checked">已把剪贴板的现场写进日志</string>
+    <string name="log_clip_checked">剪贴板信息已写入日志</string>
 
     <!-- 主界面 · 底部两页 + 设置页 -->
     <string name="tab_emoji">表情</string>
     <string name="tab_settings">设置</string>
     <string name="settings_section_send">发送</string>
-    <string name="settings_section_gif">微信里发动图</string>
+    <string name="settings_section_route">表情发送方式</string>
     <string name="settings_section_diag">诊断</string>
     <string name="settings_section_about">关于</string>
 
     <string name="settings_overlay_title">表情悬浮球</string>
-    <string name="settings_overlay_sub">在微信 / QQ 里显示一个悬浮球，用于选取并发送表情</string>
+    <string name="settings_overlay_sub">在选定的应用里显示悬浮球，用于选取并发送表情（默认微信 + QQ）</string>
     <string name="settings_overlay_permission_needed">开启悬浮球需要先允许「显示在其他应用上层」</string>
     <string name="detail_title">表情详情</string>
-    <string name="settings_gif_share">分享（默认）</string>
-    <string name="settings_gif_album">＋ → 相册</string>
+    <string name="settings_route_title">发送到微信 / QQ 的方式</string>
+    <string name="settings_route_album">相册（默认）</string>
+    <string name="settings_route_share">分享</string>
+    <string name="settings_wechat_image_title">微信里的静态图片</string>
+    <string name="settings_wechat_image_inherit">继承（全局）</string>
+    <string name="settings_wechat_image_clipboard">剪贴板</string>
 
     <string name="settings_a11y_title">自动发送服务</string>
     <string name="settings_a11y_tap_hint">无障碍设置 ›</string>
 
-    <string name="settings_gif_hint_share">表情选好后，在微信的选人页选择聊天对象即可发送。实测保动画，步骤最少。</string>
-    <string name="settings_gif_hint_album">不经过微信的选人页，改走「+ → 相册 → 第一格 → 发送」，多两级页面。实测同样保动画。</string>
+    <string name="settings_route_hint_album">选完表情后经应用的「＋ → 相册 → 第一格 → 发送」：发到当前聊天，无需在聊天列表里选人，图片与动图均按原样发送。</string>
+    <string name="settings_route_hint_share">选完表情后交给应用的分享入口，在弹出的聊天列表里选择对象发送。注意该列表按最近聊天排序，顺序可能与预期不同。</string>
+    <string name="settings_wechat_image_hint_inherit">跟随上方全局方式。如需微信静态图片单独走剪贴板，把这一项改成「剪贴板」。</string>
+    <string name="settings_wechat_image_hint_clipboard">长按输入框 → 点「粘贴」。仅对静态图片有效：微信会把动图粘贴成静态图，因此微信里的动图始终跟随上方全局方式。</string>
+
+    <string name="settings_confirm_title">最后一步自动确认</string>
+    <string name="settings_confirm_sub">流程走到确认步骤（微信为「发送」、QQ 为「确定」）时自动点击</string>
+    <string name="settings_confirm_hint_on">已开启：自动点击微信的「发送」、QQ 的「确定」。</string>
+    <string name="settings_confirm_hint_off">已关闭：流程停在最后一个按钮前，需自行点击。</string>
+    <string name="confirm_switched_on">已开启：最后一步自动确认</string>
+    <string name="confirm_switched_off">已关闭：最后一步需自行点击</string>
+
+    <!-- 悬浮球出现在哪些应用；与无障碍自动发送各管各的 -->
+    <string name="settings_ball_apps_title">悬浮球出现在哪些应用</string>
+    <string name="settings_ball_apps_value">当前：%1$s</string>
+    <string name="settings_ball_apps_all">所有应用</string>
+    <string name="ball_apps_dialog_hint">一个都不勾表示不限制，所有应用里都显示</string>
+    <string name="ball_apps_reset">恢复默认</string>
+    <string name="ball_apps_search_hint">搜索应用名或包名</string>
+    <string name="ball_apps_count">已勾选 %1$d 个 · 显示 %2$d / %3$d 个（一个都不勾表示不限制）</string>
+    <string name="ball_apps_inventory">清单来源：启动图标 %1$d 个 / 已安装 %2$d 个 / 列出 %3$d 个</string>
+    <string name="ball_apps_none">没有列出可勾选的应用（系统的应用可见性限制）</string>
+    <string name="ball_apps_none_message">未能列出应用清单。可先选「不限制」，悬浮球在所有应用里显示，之后再回来勾选。</string>
+    <string name="ball_apps_none_unlimited">不限制</string>
+
+    <!-- 下拉状态栏快捷开关 -->
+    <string name="settings_tile_title">下拉状态栏快捷开关</string>
+    <string name="settings_tile_on">已添加：可从下拉状态栏开 / 关悬浮球</string>
+    <string name="settings_tile_off">未添加：下拉状态栏的开关需要手动添加</string>
+    <string name="settings_tile_manual">下拉状态栏 → 点右上角的编辑（铅笔，个别系统是长按空白处）→ 在「未添加的开关」里找到「表情悬浮球」，拖到上面。\n\n添加后可直接在下拉状态栏开 / 关悬浮球。</string>
+    <string name="tile_label">表情悬浮球</string>
+    <string name="tile_subtitle_on">悬浮球：开</string>
+    <string name="tile_subtitle_off">悬浮球：关</string>
+
+    <!-- 导入：没读到原文件名时补一句 -->
+    <string name="import_no_name_suffix">（其中 %1$d 张未读到原文件名，使用导入时间）</string>
 
     <string name="settings_log_title">发送日志</string>
-    <string name="settings_log_sub">记录每次发送走哪条通道、结果，以及剪贴板的现场信息</string>
+    <string name="settings_log_sub">记录每次发送的方式、结果与剪贴板信息</string>
 
     <string name="settings_version_title">版本</string>
-    <string name="settings_version_sub">v%1$s · 覆盖安装新版本即可，表情数据保留</string>
+    <string name="settings_version_sub">v%1$s · 覆盖安装新版本，表情数据保留</string>
 
     <string name="banner_a11y_off">自动发送服务未开启 · 点此开启</string>
     <string name="page_settings_title">设置</string>
@@ -174,30 +243,52 @@
     <string name="settings_section_ui">UI 设置</string>
     <string name="settings_theme_title">UI 主题色</string>
     <string name="settings_night_title">深浅色</string>
-    <string name="settings_ball_title">悬浮球图片</string>
+    <string name="settings_ball_title">悬浮球外观</string>
     <string name="settings_ball_size_title">悬浮球大小</string>
     <string name="ball_size_value">%1$d dp</string>
     <string name="settings_row_more">›</string>
     <string name="settings_ui_hint">主题色与悬浮球设置立即生效；「跟随系统」时深浅色由系统的深色模式决定。</string>
-    <string name="theme_navy">深蓝（默认）</string>
-    <string name="theme_purple">紫罗兰</string>
-    <string name="theme_blue">海蓝</string>
-    <string name="theme_green">翠绿</string>
-    <string name="theme_orange">日落橙</string>
+    <string name="theme_blue">天空蓝（默认）</string>
     <string name="theme_pink">樱花粉</string>
     <string name="night_follow">跟随系统</string>
     <string name="night_light">浅色</string>
     <string name="night_dark">深色</string>
-    <string name="ball_style_default">默认图案（像素猫）</string>
+    <string name="ball_style_default">新图标（扁平猫脸）</string>
+    <string name="ball_style_classic">原图标（像素猫）</string>
     <string name="ball_style_dot">纯色表情球</string>
     <string name="ball_style_custom">自定义图片</string>
     <string name="ball_pick">从相册选一张…</string>
     <string name="dialog_theme_title">选一个主题色</string>
     <string name="dialog_night_title">深浅色</string>
-    <string name="dialog_ball_title">悬浮球图片</string>
-    <string name="ball_pick_ok">已把这张图设成悬浮球</string>
+    <string name="dialog_ball_title">悬浮球外观</string>
+    <string name="ball_pick_ok">已设为悬浮球图片</string>
     <string name="ball_pick_failed">图片读取失败</string>
     <!-- ==================== 接收分享 ==================== -->
     <string name="share_import_ok">已从分享导入 %1$d 张表情</string>
     <string name="share_import_failed">导入失败：文件无法读取</string>
+
+    <!-- ==================== 标签（v0.1.306 起；v0.1.315 去掉「包」） ==================== -->
+    <string name="btn_filter_tags">筛选</string>
+    <string name="btn_organize">整理</string>
+    <string name="tag_match_all">同时满足</string>
+    <string name="tag_match_any">任一满足</string>
+    <string name="tag_filter_clear">清空筛选</string>
+    <string name="tag_manage_title">管理标签</string>
+    <string name="tag_manage_empty">暂无标签</string>
+    <string name="dialog_tag_hint">输入标签名称</string>
+    <string name="tag_new_title">新建标签</string>
+    <string name="tag_pick_title">选择标签</string>
+    <string name="tag_delete_title">删除标签</string>
+    <string name="tag_delete_message">删除标签「%1$s」？使用该标签的表情会移除这个标签，表情本身不受影响。</string>
+    <string name="organize_title">整理选中的 %1$d 个表情</string>
+    <string name="organize_add_tags">添加标签…</string>
+    <string name="organize_remove_tags">移除标签…</string>
+    <string name="organize_add_tag_new">新建标签…</string>
+    <string name="detail_tags_title">标签</string>
+    <string name="detail_tag_add">＋ 添加标签</string>
+    <string name="detail_tag_none">暂无标签</string>
+    <string name="tag_pick_none">没有可添加的标签</string>
+    <string name="tag_remove_from_emoji">从这张表情上移除标签「%1$s」？表情本身不受影响。</string>
+    <string name="tag_auto_locked">「图片」「动图」是导入时按文件类型自动添加的标签，不能修改或删除。</string>
+    <string name="tag_auto_locked_toast">「图片」「动图」为自动标签，不能修改或删除</string>
 </resources>

@@ -12,7 +12,7 @@
         app:cardBackgroundColor="@color/surface"
         app:cardCornerRadius="16dp"
         app:cardElevation="0dp"
-        app:rippleColor="@color/primary_container"
+        app:rippleColor="?attr/colorPrimaryContainer"
         app:strokeColor="@color/divider"
         app:strokeWidth="1dp">
 
@@ -50,21 +50,8 @@
                     android:layout_height="24dp"
                     android:layout_gravity="top|start"
                     android:layout_margin="6dp"
-                    android:buttonTint="@color/primary"
+                    android:buttonTint="?attr/colorPrimary"
                     android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/copyButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="26dp"
-                    android:layout_gravity="bottom|end"
-                    android:layout_margin="8dp"
-                    android:background="@drawable/bg_copy_chip"
-                    android:gravity="center"
-                    android:paddingHorizontal="10dp"
-                    android:text="@string/copy_short"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="11sp" />
             </FrameLayout>
 
             <TextView

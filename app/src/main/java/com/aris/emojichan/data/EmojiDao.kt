@@ -5,8 +5,10 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -17,27 +19,24 @@ interface EmojiDao {
     @Query("SELECT * FROM emojis WHERE isFavorite = 1 ORDER BY createTime DESC")
     fun getFavorites(): Flow<List<EmojiEntity>>
 
-    @Query("SELECT * FROM emojis WHERE category = :category ORDER BY createTime DESC")
-    fun getByCategory(category: String): Flow<List<EmojiEntity>>
-
-    // 只按名称与标签匹配：source 目前恒为 "local"，参与 LIKE 会让搜 a/l/o/c 命中全部记录。
-    @Query("SELECT * FROM emojis WHERE name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\' ORDER BY createTime DESC")
-    fun search(query: String): Flow<List<EmojiEntity>>
-
-    @Query("SELECT * FROM emojis WHERE isFavorite = 1 AND (name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\') ORDER BY createTime DESC")
-    fun searchFavorites(query: String): Flow<List<EmojiEntity>>
-
-    @Query("SELECT * FROM emojis WHERE category = :category AND (name LIKE '%' || :query || '%' ESCAPE '\\' OR tags LIKE '%' || :query || '%' ESCAPE '\\') ORDER BY createTime DESC")
-    fun searchInCategory(query: String, category: String): Flow<List<EmojiEntity>>
+    /**
+     * 统一过滤入口：收藏 / 关键词 / 标签 的任意组合都由 [EmojiQuery.build] 拼成
+     * 一条 SQL 传进来。
+     *
+     * observedEntities 必须把两张标签表也列上：改标签只动 emoji_tags 或 tags，
+     * 不列它们的话 Room 不会重发列表，用户点了标签筛选看不到变化。
+     */
+    @RawQuery(observedEntities = [EmojiEntity::class, EmojiTagCrossRef::class, TagEntity::class])
+    fun observeFiltered(query: SupportSQLiteQuery): Flow<List<EmojiEntity>>
 
     /**
-     * 分类列表 = 分类表登记的分类 ∪ 表情表里实际出现过的分类。
+     * 过滤查询的一次性版本（测试、发送面板的标签筛选用）。
      *
-     * 用 UNION 而不是只查分类表：历史数据的分类只存在于表情表里，
-     * 只查分类表会让它们集体消失。UNION 自身会去重。
+     * suspend 不是为了好看：Room 对非 suspend 的一次性查询会做「主线程不许碰数据库」检查，
+     * 悬浮球面板就是在主线程上调它的 —— 直接抛 IllegalStateException 把应用干崩（emc-2-009）。
      */
-    @Query("SELECT name FROM categories UNION SELECT DISTINCT category FROM emojis ORDER BY name")
-    fun getAllCategories(): Flow<List<String>>
+    @RawQuery(observedEntities = [EmojiEntity::class, EmojiTagCrossRef::class, TagEntity::class])
+    suspend fun findFiltered(query: SupportSQLiteQuery): List<EmojiEntity>
 
     @Insert
     suspend fun insert(emoji: EmojiEntity): Long
@@ -57,6 +56,10 @@ interface EmojiDao {
     /** 数据库当前引用的全部文件路径，用于清理孤儿文件。 */
     @Query("SELECT filePath FROM emojis")
     suspend fun getAllFilePaths(): List<String>
+
+    /** 库里已有的全部表情名，导入时用来去重。 */
+    @Query("SELECT name FROM emojis")
+    suspend fun getAllNames(): List<String>
 
     @Query("SELECT * FROM emojis WHERE id IN (:ids)")
     suspend fun getByIds(ids: List<Long>): List<EmojiEntity>
@@ -91,59 +94,146 @@ interface EmojiDao {
     @Query("SELECT * FROM emojis WHERE lastUsedTime > 0 ORDER BY lastUsedTime DESC LIMIT :limit")
     fun getRecentEmojis(limit: Int): Flow<List<EmojiEntity>>
 
+    // ---------- 导入 ----------
+
+    /**
+     * 导入一张表情，名字与自动标签都在同一个事务里落库：
+     * 重名时用 [EmojiNaming.unique] 加 (1)(2)…，再按 [autoTagName] 挂上「图片」/「动图」。
+     *
+     * 必须是事务：否则两个导入协程可能各自读到「名字没被占用」，落库后出现两个同名表情。
+     *
+     * @return 新行的 id。
+     */
+    @Transaction
+    suspend fun importEmoji(emoji: EmojiEntity, autoTagName: String?): Long {
+        val unique = EmojiNaming.unique(emoji.name, getAllNames())
+        val id = insert(emoji.copy(name = unique))
+        if (id > 0 && autoTagName != null) {
+            val tagId = ensureTag(autoTagName)
+            if (tagId != null) insertTagLinks(listOf(EmojiTagCrossRef(id, tagId)))
+        }
+        return id
+    }
+
+    // ---------- 标签 ----------
+
+    @Query("SELECT * FROM tags ORDER BY name")
+    fun observeTags(): Flow<List<TagEntity>>
+
+    @Query("SELECT * FROM tags ORDER BY name")
+    suspend fun getTags(): List<TagEntity>
+
+    /** @return 新行的 id；-1 表示同名标签已存在。 */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertTag(tag: TagEntity): Long
+
+    @Query("SELECT * FROM tags WHERE name = :name")
+    suspend fun getTagByName(name: String): TagEntity?
+
+    @Query("SELECT * FROM tags WHERE id = :id")
+    suspend fun getTagById(id: Long): TagEntity?
+
+    @Query("DELETE FROM tags WHERE id = :id")
+    suspend fun deleteTagRow(id: Long): Int
+
+    /** 所有标签名（文件夹导入给新标签去重时用）。 */
+    @Query("SELECT name FROM tags")
+    suspend fun getAllTagNames(): List<String>
+
+    /** 重命名标签。@return 实际更新的行数，0 表示该标签已不存在。 */
+    @Query("UPDATE tags SET name = :newName WHERE id = :id")
+    suspend fun renameTag(id: Long, newName: String): Int
+
+    /** 标签不存在就建一个。@return 标签 id；null 表示同名冲突且回查也失败。 */
+    @Transaction
+    suspend fun ensureTag(name: String): Long? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return null
+        getTagByName(trimmed)?.let { return it.id }
+        val inserted = insertTag(TagEntity(name = trimmed))
+        return if (inserted != -1L) inserted else getTagByName(trimmed)?.id
+    }
+
+    /**
+     * 删除标签本身，连带摘掉它在所有表情上的挂载。
+     *
+     * 外键上是 ON DELETE CASCADE，SQLite 自己会清挂载行；这里仍然显式删一遍：
+     * 一旦哪天外键约束没生效（老库、异常升级），残留的挂载行会让标签计数对不上。
+     *
+     * @return false 表示标签不存在。
+     */
+    @Transaction
+    suspend fun deleteTagEverywhere(tagId: Long): Boolean {
+        getTagById(tagId) ?: return false
+        deleteTagLinksOfTag(tagId)
+        return deleteTagRow(tagId) > 0
+    }
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertTagLinks(links: List<EmojiTagCrossRef>)
+
+    /** 批量摘标签（表情 × 标签 的笛卡尔积）。 */
+    @Query("DELETE FROM emoji_tags WHERE emojiId IN (:emojiIds) AND tagId IN (:tagIds)")
+    suspend fun deleteTagLinks(emojiIds: List<Long>, tagIds: List<Long>): Int
+
+    @Query("DELETE FROM emoji_tags WHERE emojiId IN (:emojiIds)")
+    suspend fun deleteTagLinksOf(emojiIds: List<Long>): Int
+
+    @Query("DELETE FROM emoji_tags WHERE tagId = :tagId")
+    suspend fun deleteTagLinksOfTag(tagId: Long): Int
+
+    @Query("SELECT tagId FROM emoji_tags WHERE emojiId = :emojiId")
+    fun observeTagIdsOf(emojiId: Long): Flow<List<Long>>
+
+    @Query(
+        "SELECT t.* FROM tags t INNER JOIN emoji_tags l ON l.tagId = t.id " +
+            "WHERE l.emojiId = :emojiId ORDER BY t.name"
+    )
+    fun observeTagsOf(emojiId: Long): Flow<List<TagEntity>>
+
+    @Query(
+        "SELECT t.* FROM tags t INNER JOIN emoji_tags l ON l.tagId = t.id " +
+            "WHERE l.emojiId = :emojiId ORDER BY t.name"
+    )
+    suspend fun getTagsOf(emojiId: Long): List<TagEntity>
+
+    /** 批量打标签。@return 新挂上的条数（已存在的组合会被 IGNORE 掉，不算在内）。 */
+    @Transaction
+    suspend fun addTagsTo(emojiIds: List<Long>, tagIds: List<Long>): Int {
+        if (emojiIds.isEmpty() || tagIds.isEmpty()) return 0
+        val links = ArrayList<EmojiTagCrossRef>(emojiIds.size * tagIds.size)
+        for (emojiId in emojiIds) {
+            for (tagId in tagIds) links.add(EmojiTagCrossRef(emojiId, tagId))
+        }
+        insertTagLinks(links)
+        return links.size
+    }
+
+    /** 批量摘标签。@return 实际删掉的条数。 */
+    @Transaction
+    suspend fun removeTagsFrom(emojiIds: List<Long>, tagIds: List<Long>): Int {
+        if (emojiIds.isEmpty() || tagIds.isEmpty()) return 0
+        return deleteTagLinks(emojiIds, tagIds)
+    }
+
+    /** 把一张表情的标签集合整体换成 [tagIds]（详情页编辑用）。 */
+    @Transaction
+    suspend fun setTagsOf(emojiId: Long, tagIds: List<Long>) {
+        deleteTagLinksOf(listOf(emojiId))
+        if (tagIds.isNotEmpty()) {
+            insertTagLinks(tagIds.map { EmojiTagCrossRef(emojiId, it) })
+        }
+    }
+
     /** 记录一次发送：次数 +1、时间戳刷新。@return 实际更新的行数，0 表示该 id 已不存在。 */
     @Query("UPDATE emojis SET usageCount = usageCount + 1, lastUsedTime = :time WHERE id = :id")
     suspend fun recordUsage(id: Long, time: Long): Int
 
-    // ---------- 分类管理 ----------
-
-    /** @return 新行的 id；返回 -1 表示同名分类已存在（被 UNIQUE 索引挡下）。 */
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertCategory(category: CategoryEntity): Long
-
-    @Query("SELECT * FROM categories WHERE name = :name")
-    suspend fun getCategoryByName(name: String): CategoryEntity?
-
-    @Query("UPDATE categories SET name = :newName WHERE id = :id")
-    suspend fun renameCategoryRow(id: Long, newName: String): Int
-
-    /** 把表情表里挂在该分类下的记录一并改名。 */
-    @Query("UPDATE emojis SET category = :newName WHERE category = :oldName")
-    suspend fun renameCategoryInEmojis(oldName: String, newName: String): Int
-
-    /** 把某分类下的表情整体改挂到另一个分类（删除分类时用）。 */
-    @Query("UPDATE emojis SET category = :target WHERE category = :source")
-    suspend fun moveEmojisToCategory(source: String, target: String): Int
-
-    @Query("DELETE FROM categories WHERE id = :id")
-    suspend fun deleteCategoryRow(id: Long): Int
-
-    @Query("SELECT COUNT(*) FROM emojis WHERE category = :category")
-    suspend fun countInCategory(category: String): Int
-
-    /**
-     * 重命名分类：分类表与表情表必须一起改，所以包在同一个事务里。
-     * @return false 表示目标名已被占用，或原分类已不存在。
-     */
+    /** 删除表情（连带它在 emoji_tags 里的挂载）。 */
     @Transaction
-    suspend fun renameCategoryEverywhere(oldName: String, newName: String): Boolean {
-        if (oldName == newName) return true
-        if (getCategoryByName(newName) != null) return false
-        val category = getCategoryByName(oldName) ?: return false
-        renameCategoryRow(category.id, newName)
-        renameCategoryInEmojis(oldName, newName)
-        return true
-    }
-
-    /**
-     * 删除分类：该分类下的表情改挂到 [fallbackCategory]，**不跟着一起删**。
-     * 两个动作同一个事务，避免出现「分类没了、表情还挂在一个不存在的分类下」。
-     * @return 删除的分类行数，0 表示该分类不存在。
-     */
-    @Transaction
-    suspend fun deleteCategoryByName(name: String, fallbackCategory: String): Int {
-        val category = getCategoryByName(name) ?: return 0
-        moveEmojisToCategory(name, fallbackCategory)
-        return deleteCategoryRow(category.id)
+    suspend fun deleteEmojisByIds(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        deleteTagLinksOf(ids)
+        deleteByIds(ids)
     }
 }

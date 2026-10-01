@@ -3,20 +3,25 @@
     <!--
       两套色：① 语义色（背景/卡片/文字/分隔线……），深浅色各一份，值直接写在
       values/ 与 values-night/ 里，系统切深色就自动换；② 主题色调色板
-      （palette_<色>_primary 等 6 个），由 values/themes.xml 里的
+      （palette_blue_* 与 palette_pink_* 各 8 个），由 values/themes.xml 里的
       ThemeOverlay.EmojiChan.<色> 挑一套套上去，运行时能换。
-      语义色保持名字不变（别的布局都在用），primary 那一组是默认主题色（深蓝）的别名。
-    -->
-    <color name="primary">@color/palette_navy_primary</color>
-    <color name="primary_light">#4A6FD0</color>
-    <color name="primary_dark">#16295E</color>
-    <color name="on_primary">@color/palette_on_primary</color>
-    <color name="primary_container">@color/palette_navy_primary_container</color>
-    <color name="on_primary_container">@color/palette_navy_on_primary_container</color>
 
-    <color name="secondary">@color/palette_navy_secondary</color>
-    <color name="secondary_container">@color/palette_navy_secondary_container</color>
-    <color name="on_secondary_container">@color/palette_navy_on_secondary_container</color>
+      主题色就两种，取自应用图标里的那对粉蓝：天空蓝 #99DFFF（默认）和樱花粉
+      #FF99DF。这两个原色太淡 —— 浅色模式下拿来当 colorPrimary 会白字看不见、
+      当文字也看不清 —— 所以浅色模式用同色相压深的版本（蓝 #1C7EA8 白字 4.6:1、
+      粉 #C0438F 白字 4.7:1），深色模式才用原色本身配深墨字（10:1 上下）。
+
+      语义色保持名字不变（别的布局都在用）；primary 那一组别名指向默认的蓝，
+      真正要跟着主题色走的控件用 ?attr/colorPrimary 这类主题属性取色。
+    -->
+    <color name="primary">@color/palette_blue_primary</color>
+    <color name="on_primary">@color/palette_blue_on_primary</color>
+    <color name="primary_container">@color/palette_blue_primary_container</color>
+    <color name="on_primary_container">@color/palette_blue_on_primary_container</color>
+
+    <color name="secondary">@color/palette_blue_secondary</color>
+    <color name="secondary_container">@color/palette_blue_secondary_container</color>
+    <color name="on_secondary_container">@color/palette_blue_on_secondary_container</color>
     <color name="accent">#FFD166</color>
 
     <color name="background">#F5F6FA</color>
@@ -37,47 +42,23 @@
     <color name="status_off">#D98324</color>
 
     <!-- ==================== 主题色调色板（浅色） ==================== -->
-    <color name="palette_on_primary">#FFFFFF</color>
+    <!-- 天空蓝（默认）：主色 = 图标里那个蓝压深，次色 = 图标里的粉 -->
+    <color name="palette_blue_primary">#1C7EA8</color>
+    <color name="palette_blue_on_primary">#FFFFFF</color>
+    <color name="palette_blue_primary_container">#D9F1FF</color>
+    <color name="palette_blue_on_primary_container">#06344A</color>
+    <color name="palette_blue_secondary">#C0438F</color>
+    <color name="palette_blue_on_secondary">#FFFFFF</color>
+    <color name="palette_blue_secondary_container">#FBE0F1</color>
+    <color name="palette_blue_on_secondary_container">#4A0A2E</color>
 
-    <color name="palette_navy_primary">#1E3A8A</color>
-    <color name="palette_navy_primary_container">#DCE6FA</color>
-    <color name="palette_navy_on_primary_container">#11224E</color>
-    <color name="palette_navy_secondary">#3D6FCB</color>
-    <color name="palette_navy_secondary_container">#DEEAFB</color>
-    <color name="palette_navy_on_secondary_container">#0E2A55</color>
-
-    <color name="palette_purple_primary">#6C5CE7</color>
-    <color name="palette_purple_primary_container">#EAE6FF</color>
-    <color name="palette_purple_on_primary_container">#241A5E</color>
-    <color name="palette_purple_secondary">#00B8A9</color>
-    <color name="palette_purple_secondary_container">#D7F6F2</color>
-    <color name="palette_purple_on_secondary_container">#00423C</color>
-
-    <color name="palette_blue_primary">#2F6FE4</color>
-    <color name="palette_blue_primary_container">#E2ECFF</color>
-    <color name="palette_blue_on_primary_container">#10265C</color>
-    <color name="palette_blue_secondary">#00A0C6</color>
-    <color name="palette_blue_secondary_container">#D5F2FA</color>
-    <color name="palette_blue_on_secondary_container">#00323F</color>
-
-    <color name="palette_green_primary">#1F9D6B</color>
-    <color name="palette_green_primary_container">#DDF5E9</color>
-    <color name="palette_green_on_primary_container">#0B3323</color>
-    <color name="palette_green_secondary">#64A62B</color>
-    <color name="palette_green_secondary_container">#EAF6D8</color>
-    <color name="palette_green_on_secondary_container">#23380A</color>
-
-    <color name="palette_orange_primary">#E07A2F</color>
-    <color name="palette_orange_primary_container">#FFEBD8</color>
-    <color name="palette_orange_on_primary_container">#4A2205</color>
-    <color name="palette_orange_secondary">#D98E00</color>
-    <color name="palette_orange_secondary_container">#FFF1D6</color>
-    <color name="palette_orange_on_secondary_container">#452C00</color>
-
-    <color name="palette_pink_primary">#E0508F</color>
-    <color name="palette_pink_primary_container">#FFE3EF</color>
-    <color name="palette_pink_on_primary_container">#4E0B29</color>
-    <color name="palette_pink_secondary">#B45BD8</color>
-    <color name="palette_pink_secondary_container">#F5E4FF</color>
-    <color name="palette_pink_on_secondary_container">#350F4A</color>
+    <!-- 樱花粉：主色 = 图标里那个粉压深，次色 = 图标里的蓝 -->
+    <color name="palette_pink_primary">#C0438F</color>
+    <color name="palette_pink_on_primary">#FFFFFF</color>
+    <color name="palette_pink_primary_container">#FFE0F2</color>
+    <color name="palette_pink_on_primary_container">#4A0A2E</color>
+    <color name="palette_pink_secondary">#1C7EA8</color>
+    <color name="palette_pink_on_secondary">#FFFFFF</color>
+    <color name="palette_pink_secondary_container">#D9F1FF</color>
+    <color name="palette_pink_on_secondary_container">#06344A</color>
 </resources>

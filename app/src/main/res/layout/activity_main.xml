@@ -19,6 +19,19 @@
         app:title="@string/app_name"
         app:titleTextAppearance="@style/TextAppearance.EmojiChan.Title">
 
+        <!-- 排序（用户 m09998）：跟状态点同在标题行，摆在它左边。点开是「按什么排 + 正序 / 倒序」 -->
+        <ImageButton
+            android:id="@+id/btnSort"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/sort_button"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_sort"
+            android:tint="?attr/colorOnSurface" />
+
         <!-- 自动发送状态：跟标题同行的最右边。绿点 = 无障碍服务已连上，黄点 = 没开；
              点一下直接去系统无障碍设置（原来那条占一整行的黄色提示条撤了） -->
         <LinearLayout
@@ -186,7 +199,7 @@
                 </HorizontalScrollView>
             </LinearLayout>
 
-            <!-- 标签面板：点左边的按钮展开，所有标签在这里以网格排列；收起时完全不占地方 -->
+            <!-- 标签面板：点左边的按钮展开，标签在上面那行功能 chip 下面以网格排列；收起时完全不占地方 -->
             <ScrollView
                 android:id="@+id/tagPanelScroll"
                 android:layout_width="match_parent"
@@ -196,14 +209,31 @@
                 android:scrollbars="none"
                 android:visibility="gone">
 
-                <com.google.android.material.chip.ChipGroup
-                    android:id="@+id/tagGrid"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    app:chipSpacingHorizontal="8dp"
-                    app:chipSpacingVertical="2dp"
-                    app:singleLine="false"
-                    app:singleSelection="false" />
+                    android:orientation="vertical">
+
+                    <!-- 新建 / 管理 / 交 / 并 / 非 独占一行，放在所有标签上面（用户 m10194、m10201） -->
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/tagActions"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="4dp"
+                        app:chipSpacingHorizontal="8dp"
+                        app:chipSpacingVertical="2dp"
+                        app:singleLine="false"
+                        app:singleSelection="false" />
+
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/tagGrid"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:chipSpacingHorizontal="8dp"
+                        app:chipSpacingVertical="2dp"
+                        app:singleLine="false"
+                        app:singleSelection="false" />
+                </LinearLayout>
             </ScrollView>
 
             <FrameLayout
@@ -228,6 +258,24 @@
                     android:text="@string/empty_emoji_list"
                     android:textColor="@color/text_secondary"
                     android:textSize="15sp"
+                    android:visibility="gone" />
+
+                <!-- 回到置顶（用户 m09998）：往下滚过一段才出现，滚回顶上自己收起来。
+                     摆在网格右下角，浮在列表上、不占网格的格子 -->
+                <ImageButton
+                    android:id="@+id/btnScrollTop"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_gravity="bottom|end"
+                    android:layout_marginEnd="16dp"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/bg_scroll_top"
+                    android:contentDescription="@string/scroll_top"
+                    android:elevation="4dp"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_arrow_up"
+                    android:tint="?attr/colorOnPrimaryContainer"
                     android:visibility="gone" />
             </FrameLayout>
 
@@ -509,7 +557,6 @@
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginStart="66dp"
                             android:background="@color/divider" />
 
                         <LinearLayout
@@ -555,7 +602,6 @@
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginStart="66dp"
                             android:background="@color/divider" />
 
                         <LinearLayout
@@ -607,7 +653,6 @@
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginStart="66dp"
                             android:background="@color/divider" />
 
                         <LinearLayout
@@ -653,7 +698,6 @@
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginStart="66dp"
                             android:background="@color/divider" />
 
                         <LinearLayout
@@ -872,7 +916,6 @@
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginStart="66dp"
                             android:background="@color/divider" />
 
                         <LinearLayout

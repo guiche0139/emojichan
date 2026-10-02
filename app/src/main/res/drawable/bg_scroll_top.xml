@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  「回到置顶」那颗圆钮的底（用户 m09998）。
+  用主题的容器色而不是主色：主色是给整块填充用的，缩成小圆点太扎眼；
+  深浅色两套由主题槽位自己接管，这里不用分支。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorPrimaryContainer" />
+</shape>

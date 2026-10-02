@@ -25,7 +25,8 @@ import kotlin.math.roundToInt
  * 这里没有把它们抹平：
  * - 「内容完全相同」的组：一组里只有一张是真的，「保留哪张」有默认答案（最早导入的那张），
  *   点缩略图改保留对象，点那一组的按钮删掉其余；
- * - 「画面相近」的组：没有对错，只有用户的选择，点缩略图是「选中要删的」，选完按底部那一条才真的删。
+ * - 「画面相近」的组：没有对错，只有用户的选择，点缩略图是「选中要删的」，选完按底部那一条才真的删；
+ *   觉得这组本来就不是同一个表情，点「忽略这组」（v0.2.006，用户 m10497），记进忽略名单后不再同组。
  *
  * 两段互斥（由页面保证）：已经归进「完全相同」的图不再出现「画面相近」里，同一张图只出现一次。
  *
@@ -67,6 +68,9 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     /** 「相近」的选择变了：页面更新底部那条。 */
     var onSelectionChanged: (() -> Unit)? = null
+
+    /** 点「忽略这组」：这一组不像同一个表情，交给页面记进忽略名单。 */
+    var onIgnoreGroup: ((SimilarFinder.Group) -> Unit)? = null
 
     val duplicateCount: Int get() = duplicateGroups.size
 
@@ -264,10 +268,12 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val title: TextView = view.findViewById(R.id.similarGroupTitle)
         private val wasted: TextView = view.findViewById(R.id.similarGroupWasted)
         private val thumbs: LinearLayout = view.findViewById(R.id.similarThumbs)
+        private val ignore: MaterialButton = view.findViewById(R.id.btnSimilarIgnore)
 
         fun bind(index: Int) {
             val group = similarGroups[index]
             val context = itemView.context
+            ignore.setOnClickListener { onIgnoreGroup?.invoke(group) }
             title.text = context.getString(
                 R.string.similar_group_title,
                 group.members.size,

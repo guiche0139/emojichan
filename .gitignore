@@ -30,6 +30,9 @@ local.properties
 captures/
 .cxx/
 
+# 本机打的包统一放 apk/（*.apk 已在上面的 Android 段被忽略；这里再显式圈出目录，免得再往根目录丢）
+apk/
+
 # 正式签名密钥与口令（绝不入库；只在本机 keystore/ 和 keystore.properties 里）
 keystore/
 keystore.properties
@@ -40,7 +43,9 @@ meme/
 # 预览图的渲染草稿脚本（只在本机跑，带着绝对路径）
 preview/_*.ps1
 
-# Project docs kept local only
+# Project docs kept local only（本地文档统一放 md/ 目录，仓库里只上传 README.md；
+# 下面逐个列文件名是防呆：万一又被放回根目录，照样不会入库）
+md/
 design.txt
 design/
 video/

@@ -94,14 +94,24 @@ class CompressPreviewActivity : AppCompatActivity() {
             finish()
             return
         }
-        val dialog = BusyDialog.show(this, R.string.compress_progress_title, getString(R.string.compress_progress, 1, items.size))
+        val dialog = BusyDialog.showProgress(
+            this,
+            R.string.compress_progress_title,
+            getString(R.string.compress_progress, 1, items.size)
+        )
         lifecycleScope.launch {
             var done = 0
             var failed = 0
             var saved = 0L
 
             items.forEachIndexed { index, item ->
-                BusyDialog.update(this@CompressPreviewActivity, dialog, getString(R.string.compress_progress, index + 1, items.size))
+                BusyDialog.update(
+                    this@CompressPreviewActivity,
+                    dialog,
+                    index + 1,
+                    items.size,
+                    getString(R.string.compress_progress, index + 1, items.size)
+                )
                 val replaced = withContext(Dispatchers.IO) { replace(item) }
                 if (replaced) {
                     done++

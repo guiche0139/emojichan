@@ -89,12 +89,15 @@ object SimilarFinder {
      * @param hashOf 算一张图的感知哈希；返回 null 表示算不出来（文件没了、不是图片），这一张跳过。
      *   取消要照原样抛出去 —— 用户点了「停止」不能还闷头把剩下的算完。
      * @param onProgress 每处理一张报一次（已处理, 总数）
+     * @param ignored 用户标过「这两张不像同一个表情」的判定（v0.2.006，见 [SimilarIgnore]）。
+     *   返回 true 的两张永远不会落进同一组。
      */
     suspend fun find(
         items: List<DuplicateFinder.Item>,
         threshold: Int,
         hashOf: suspend (DuplicateFinder.Item) -> Long?,
-        onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> }
+        onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> },
+        ignored: (Long, Long) -> Boolean = { _, _ -> false }
     ): List<Group> {
         val todo = items.filter { it.present }.sortedBy { it.createTime }
         val hashes = HashMap<Long, Long>()
@@ -110,7 +113,7 @@ object SimilarFinder {
             if (hash != null) hashes[item.id] = hash
         }
         onProgress(todo.size, todo.size)
-        return group(todo, hashes, threshold)
+        return group(todo, hashes, threshold, ignored)
     }
 
     /**
@@ -118,11 +121,16 @@ object SimilarFinder {
      *
      * 按导入时间依次入组，每张跟「底线内最近的组代表」走；都不够近就自己当新组的代表。
      * 结果按差距由近到远排（[SIMILARITY_ORDER]）。
+     *
+     * @param ignored 用户标过「这两张不像同一个表情」的判定（v0.2.006，见 [SimilarIgnore]）：
+     *   跟候选组里任何一张被忽略过就不进这一组。不能只比代表 —— A 与 C 被忽略、B 先进了这组
+     *   （B 跟谁都没被忽略），C 会顺着代表 B 混进来，用户看到的还是原来那一组。
      */
     fun group(
         items: List<DuplicateFinder.Item>,
         hashes: Map<Long, Long>,
-        threshold: Int
+        threshold: Int,
+        ignored: (Long, Long) -> Boolean = { _, _ -> false }
     ): List<Group> {
         val ordered = items.filter { it.present }.sortedBy { it.createTime }
         val groups = mutableListOf<MutableList<DuplicateFinder.Item>>()
@@ -134,6 +142,7 @@ object SimilarFinder {
             var best = -1
             var bestDistance = Int.MAX_VALUE
             for (index in groups.indices) {
+                if (groups[index].any { ignored(item.id, it.id) }) continue
                 val distance = PerceptualHash.distance(hash, representatives[index])
                 if (distance <= threshold && distance < bestDistance) {
                     best = index

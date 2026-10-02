@@ -52,7 +52,13 @@ object SourceFiles {
      * 一个都没写成就抛 [IOException]，并且在用户目录里不留半成品文件。
      */
     @Throws(IOException::class)
-    fun zipSources(context: Context, treeUri: Uri, uris: List<Uri>, name: String): List<Uri> {
+    fun zipSources(
+        context: Context,
+        treeUri: Uri,
+        uris: List<Uri>,
+        name: String,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): List<Uri> {
         val resolver = context.contentResolver
         val parent = DocumentsContract.buildDocumentUriUsingTree(
             treeUri,
@@ -68,6 +74,7 @@ object SourceFiles {
             raw.use { out ->
                 ZipOutputStream(BufferedOutputStream(out, 64 * 1024)).use { zip ->
                     uris.forEachIndexed { index, uri ->
+                        onProgress(index + 1, uris.size)
                         val input = runCatching { resolver.openInputStream(uri) }.getOrNull()
                             ?: run {
                                 SendLog.w("导入", "原文件读不出来，跳过：" + uri)
@@ -113,10 +120,15 @@ object SourceFiles {
      * 文件选择器 / 文件夹选择器来的 Uri（DocumentsProvider 管的）：直接请它删。
      * 返回删掉的个数；没有写权限之类的会失败，失败的不算数，交给调用方报给用户。
      */
-    fun deleteDocuments(context: Context, uris: List<Uri>): Int {
+    fun deleteDocuments(
+        context: Context,
+        uris: List<Uri>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): Int {
         var deleted = 0
-        uris.forEach { uri ->
-            if (!DocumentsContract.isDocumentUri(context, uri)) return@forEach
+        uris.forEachIndexed { index, uri ->
+            onProgress(index + 1, uris.size)
+            if (!DocumentsContract.isDocumentUri(context, uri)) return@forEachIndexed
             val ok = runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
                 .getOrDefault(false)
             if (ok) {

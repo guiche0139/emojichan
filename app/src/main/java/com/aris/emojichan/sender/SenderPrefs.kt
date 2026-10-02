@@ -20,6 +20,7 @@ object SenderPrefs {
     private const val KEY_LEGACY_WECHAT_GIF_ALBUM = "wechat_gif_album"
     private const val KEY_AUTO_CONFIRM = "auto_confirm_last_step"
     private const val KEY_BALL_PACKAGES = "ball_packages"
+    private const val KEY_BALL_ON = "ball_on"
 
     /**
      * 全局发送方式：表情发到微信 / QQ 时走哪条路。
@@ -70,17 +71,17 @@ object SenderPrefs {
     /**
      * 流程最后那一下「确认」要不要自动点。
      *
-     * true（默认）= 看到确认框就自己点掉，用户零操作。微信的确认键叫「发送」、
-     * QQ 叫「确定」，两边都认。
-     * false = 走到确认框就停下，由用户自己点 —— 这是全程唯一一处「替用户拍板」，
-     * 点错就是把表情发出去了、撤不回来，所以留个开关。
+     * false（默认，v0.2.002 起，用户 m09774）= 走到确认框就停下，由用户自己点 ——
+     * 这是全程唯一一处「替用户拍板」，点错就是把表情发出去了、撤不回来，所以默认交给用户。
+     * true = 看到确认框就自己点掉，用户零操作。微信的确认键叫「发送」、
+     * QQ 叫「确定」，两边都认；想这样得在设置页自己打开（打开时有一次二次确认）。
      *
      * 分享 / 相册 / 粘贴三条路都读它。粘贴路线曾是例外（自己点发送，不受这个开关管），
      * v0.1.322 起改为同样返回 `PasteOutcome.STAGED` 交给用户（emc-2-014）。
      */
     fun autoConfirmLastStep(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_AUTO_CONFIRM, true)
+            .getBoolean(KEY_AUTO_CONFIRM, false)
 
     fun setAutoConfirmLastStep(context: Context, value: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -112,6 +113,24 @@ object SenderPrefs {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putStringSet(KEY_BALL_PACKAGES, packages.toSet())
+            .apply()
+    }
+
+    /**
+     * 悬浮球的开关状态（用户 m09897：默认开着）。
+     *
+     * 光有 [FloatingBallService.isRunning] 不够 —— 那只是「此刻有没有在跑」，进程被系统收掉之后
+     * 就成了 false。用户把球打开过，就是希望它一直开着，所以这里把「愿望」单独记一份：
+     * 下次进主界面时按它把球静默挂回来；用户在开关或磁贴里主动收起时会写 false，不会被自动挂回。
+     */
+    fun ballOn(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_BALL_ON, true)
+
+    fun setBallOn(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_BALL_ON, on)
             .apply()
     }
 }

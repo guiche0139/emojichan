@@ -176,7 +176,11 @@ class CompressActivity : AppCompatActivity() {
 
     private fun runCompress(selected: List<EmojiFile>) {
         val lossless = CompressPrefs.lossless(this)
-        val dialog = BusyDialog.show(this, R.string.compress_progress_title, getString(R.string.compress_progress, 1, selected.size))
+        val dialog = BusyDialog.showProgress(
+            this,
+            R.string.compress_progress_title,
+            getString(R.string.compress_progress, 1, selected.size)
+        )
         lifecycleScope.launch {
             val results = mutableListOf<PendingCompress>()
             // 没进结果的三种原因分开记账 —— 「没变小」和「装不下」对用户是两件事，值得分开说。
@@ -184,7 +188,13 @@ class CompressActivity : AppCompatActivity() {
             var tooBig = 0
             var failed = 0
             selected.forEachIndexed { index, file ->
-                BusyDialog.update(this@CompressActivity, dialog, getString(R.string.compress_progress, index + 1, selected.size))
+                BusyDialog.update(
+                    this@CompressActivity,
+                    dialog,
+                    index + 1,
+                    selected.size,
+                    getString(R.string.compress_progress, index + 1, selected.size)
+                )
                 val outcome = withContext(Dispatchers.IO) { EmojiCompressor.compressTo(file.path, tempDir, lossless) }
                 val path = outcome.path
                 if (outcome.status == EmojiCompressor.Status.DONE && path != null) {
@@ -249,14 +259,28 @@ class CompressActivity : AppCompatActivity() {
 
     private fun exportZip(uri: Uri) {
         val targets = adapter.selectedFiles().map { ExportTarget(it.name, it.path) }
-        val dialog = BusyDialog.show(this, R.string.export_progress_title, getString(R.string.export_progress, 0, targets.size))
+        val dialog = BusyDialog.showProgress(
+            this,
+            R.string.export_progress_title,
+            getString(R.string.export_progress, 1, targets.size)
+        )
         lifecycleScope.launch {
             val report = withContext(Dispatchers.IO) {
                 val out = contentResolver.openOutputStream(uri, "w")
                 if (out == null) {
                     ImageExporter.Report(0, targets.size, 0L)
                 } else {
-                    out.use { ImageExporter.zip(it, targets) }
+                    out.use { stream ->
+                        ImageExporter.zip(stream, targets) { done, total ->
+                            BusyDialog.update(
+                                this@CompressActivity,
+                                dialog,
+                                done,
+                                total,
+                                getString(R.string.export_progress, done, total)
+                            )
+                        }
+                    }
                 }
             }
             BusyDialog.dismiss(this@CompressActivity, dialog)

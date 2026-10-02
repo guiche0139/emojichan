@@ -61,14 +61,23 @@ object ImageExporter {
         return if (dot <= 0) raw + " (" + times + ")" else raw.substring(0, dot) + " (" + times + ")" + raw.substring(dot)
     }
 
-    /** 打成一个 zip。条目名就是导出文件名，压缩方式用默认的 deflate。 */
-    fun zip(output: OutputStream, targets: List<ExportTarget>): Report {
+    /**
+     * 打成一个 zip。条目名就是导出文件名，压缩方式用默认的 deflate。
+     *
+     * [onProgress] 每处理一张报一次（已处理, 总数），调用方拿它刷进度条。
+     */
+    fun zip(
+        output: OutputStream,
+        targets: List<ExportTarget>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): Report {
         var written = 0
         var failed = 0
         var bytes = 0L
         val used = HashMap<String, Int>()
         ZipOutputStream(BufferedOutputStream(output)).use { zip ->
-            targets.forEach { target ->
+            targets.forEachIndexed { index, target ->
+                onProgress(index + 1, targets.size)
                 val source = File(target.path)
                 try {
                     if (!source.isFile) throw IllegalStateException("源文件不在了：" + target.path)

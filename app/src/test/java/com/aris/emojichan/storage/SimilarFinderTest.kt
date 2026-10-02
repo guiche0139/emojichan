@@ -238,6 +238,65 @@ class SimilarFinderTest {
         assertEquals(1L, groups.first().representative.id)
     }
 
+    /** 用户点过「忽略这组」的那两张，之后不该再同组（v0.2.006，用户 m10497）。 */
+    @Test
+    fun ignoredPairIsNotGroupedTogether() = runTest {
+        val keys = setOf(SimilarIgnore.key(1, 2))
+
+        val groups = SimilarFinder.find(
+            items = listOf(item(1), item(2)),
+            threshold = SimilarFinder.DEFAULT,
+            hashOf = { if (it.id == 1L) ones(0) else ones(3) },
+            ignored = { a, b -> SimilarIgnore.contains(keys, a, b) }
+        )
+
+        assertTrue("忽略过的两张不该还在一起", groups.isEmpty())
+    }
+
+    /**
+     * 被忽略的那一对不能从第三张那里绕回来。
+     *
+     * A≈B（差 3）、B≈C（差 3）、A≈C（差 6）：只比代表的话，C 会顺着已进组的 B 混进来，
+     * 用户看到的还是原来那一组 —— 所以判定要对准组里每一张。
+     */
+    @Test
+    fun ignoredPairDoesNotComeBackThroughAThirdOne() {
+        val items = listOf(item(1), item(2), item(3))
+        val hashes = mapOf(1L to ones(0), 2L to ones(3), 3L to ones(6))
+        val keys = setOf(SimilarIgnore.key(1, 3))
+
+        assertEquals(
+            listOf(1L, 2L, 3L),
+            SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT).single().members.map { it.id }
+        )
+
+        val after = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT) { a, b ->
+            SimilarIgnore.contains(keys, a, b)
+        }
+
+        assertEquals(listOf(1L, 2L), after.single().members.map { it.id })
+    }
+
+    /** 忽略的是「这一对」，不是「这两张」：其中一张照样能跟别人成组，别的组一点不受影响。 */
+    @Test
+    fun ignoringAPairKeepsBothImagesGroupableElsewhere() {
+        val items = listOf(item(1), item(2), item(3), item(4), item(5))
+        val hashes = mapOf(
+            1L to ones(0), 2L to ones(2), 3L to ones(4),  // 本来是一组
+            4L to ones(40), 5L to ones(43)                // 另一组，差 3 位
+        )
+        val keys = setOf(SimilarIgnore.key(2, 3))
+
+        val groups = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT) { a, b ->
+            SimilarIgnore.contains(keys, a, b)
+        }.sortedBy { it.representative.id }
+
+        // 3 被挡在 1、2 那组之外，自己一张凑不成组；2 并没有被踢出去
+        assertEquals(2, groups.size)
+        assertEquals(listOf(1L, 2L), groups[0].members.map { it.id })
+        assertEquals(listOf(4L, 5L), groups[1].members.map { it.id })
+    }
+
     /** 把「差几位」换算成相似度百分比：相同位数 / 总位数，四舍五入到整数。 */
     @Test
     fun distanceIsReportedAsSimilarityPercent() {

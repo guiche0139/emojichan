@@ -12,15 +12,21 @@ sealed interface SearchTerm {
     /** 用来拼 LIKE 的那段文字。 */
     val text: String
 
+    /** 这一项是不是「除」（`!` 开头）：true 时整项取反。 */
+    val not: Boolean
+
     /** 不带符号的词：表情名命中或标签名命中都算。 */
-    data class Keyword(override val text: String) : SearchTerm
+    data class Keyword(override val text: String, override val not: Boolean = false) : SearchTerm
 
     /** `@关键词@`：只看表情名。 */
-    data class Name(override val text: String) : SearchTerm
+    data class Name(override val text: String, override val not: Boolean = false) : SearchTerm
 
     /** `$TAG=标签名$`：只看标签名。 */
-    data class Tag(override val text: String) : SearchTerm
+    data class Tag(override val text: String, override val not: Boolean = false) : SearchTerm
 }
+
+/** 选中多个标签时的合并方式；[EXCLUDE] 就是「除」——这些标签一个都不含。 */
+enum class TagMode { ALL, ANY, EXCLUDE }
 
 /**
  * 条件表达式：外层数组是「或」，内层数组是「和」。
@@ -53,9 +59,17 @@ data class EmojiFilter(
      */
     val tagIds: List<Long> = emptyList(),
 
-    /** true = 同时满足所有标签（AND），false = 任一满足（OR）。 */
-    val tagMatchAll: Boolean = true
+    /**
+     * 每个标签各自怎么合并（v0.2.005，用户 m10282）：交 = 都要有、并 = 有一个就行、非 = 都不要有。
+     *
+     * 没写进这张表的标签按 [TagMode.ALL] 算 —— 新选中的标签默认是「交」。读法与搜索框那套
+     * 语法同一套优先级（& 比 | 紧）：「& 猫 & 可爱 | 生气」= 有猫且有可爱、或者有生气。
+     */
+    val tagModes: Map<Long, TagMode> = emptyMap()
 ) {
+    /** 某个标签用哪种合并方式；没单独设过就是「交」。 */
+    fun modeOf(tagId: Long): TagMode = tagModes[tagId] ?: TagMode.ALL
+
     companion object {
         /** `$TAG=` 与 `$TAG:` 两种头部都认，大小写不敏感。 */
         private const val TAG_HEAD_EQ = "TAG="
@@ -78,9 +92,9 @@ data class EmojiFilter(
         }
 
         /** 把 `$...$` 里的内容当成标签名；认不出标签名时返回 null（这一项丢掉）。 */
-        private fun tagTerm(body: String): SearchTerm.Tag? {
+        private fun tagTerm(body: String, not: Boolean = false): SearchTerm.Tag? {
             val name = tagBody(body)
-            return if (name.isEmpty()) null else SearchTerm.Tag(name)
+            return if (name.isEmpty()) null else SearchTerm.Tag(name, not)
         }
 
         /**
@@ -92,16 +106,23 @@ data class EmojiFilter(
          *
          * 没闭合的 `$TAG:猫` 在遇到 `&` 或 `/` 时截断 —— 老写法（`$TAG:猫` 不带右括号）
          * 跟新写法混着写时不会把后面的条件吞掉。
+         *
+         * `!` 开头的这一项取反，就是筛选面板上的「除」：`!$TAG=猫$` = 不含猫标签。
          */
         fun parse(raw: String): SearchExpr? {
             val groups = ArrayList<MutableList<SearchTerm>>()
             var group = ArrayList<SearchTerm>()
             val bare = StringBuilder()
+            // 「除」只作用在紧跟着的那一项上，写完整项就清掉
+            var not = false
 
             fun flushBare() {
                 val text = bare.toString().trim()
                 bare.setLength(0)
-                if (text.isNotEmpty()) group.add(SearchTerm.Keyword(text))
+                if (text.isNotEmpty()) {
+                    group.add(SearchTerm.Keyword(text, not))
+                    not = false
+                }
             }
 
             fun endGroup() {
@@ -121,6 +142,12 @@ data class EmojiFilter(
                         endGroup()
                         i++
                     }
+                    '!' -> {
+                        // 连着敲几个 ! 还是一个「除」：多按一下不该变成「又要又不含」的空结果
+                        flushBare()
+                        not = true
+                        i++
+                    }
                     '$', '@' -> {
                         flushBare()
                         val close = raw.indexOf(c, i + 1)
@@ -130,9 +157,18 @@ data class EmojiFilter(
                             if (k < 0) raw.length else k
                         } else raw.length
                         val body = raw.substring(i + 1, stop)
-                        if (c == '$') tagTerm(body)?.let { group.add(it) } else {
+                        if (c == '$') {
+                            val term = tagTerm(body, not)
+                            if (term != null) {
+                                group.add(term)
+                                not = false
+                            }
+                        } else {
                             val text = body.trim()
-                            if (text.isNotEmpty()) group.add(SearchTerm.Name(text))
+                            if (text.isNotEmpty()) {
+                                group.add(SearchTerm.Name(text, not))
+                                not = false
+                            }
                         }
                         i = if (close >= 0) close + 1 else stop
                     }

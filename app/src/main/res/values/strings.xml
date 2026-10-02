@@ -12,9 +12,22 @@
     <string name="search_syntax_keyword">关键词</string>
     <string name="search_syntax_and">和</string>
     <string name="search_syntax_or">或</string>
+    <string name="search_syntax_not">除</string>
     <string name="search_syntax_help">用法</string>
+
+    <!-- 列表排序与回到置顶（v0.2.003，用户 m09998） -->
+    <string name="sort_title">排序</string>
+    <string name="sort_button">排序</string>
+    <string name="sort_section_field">排序方式</string>
+    <string name="sort_section_order">顺序</string>
+    <string name="sort_field_time">添加时间</string>
+    <string name="sort_field_name">名称</string>
+    <string name="sort_field_size">文件大小</string>
+    <string name="sort_order_asc">正序</string>
+    <string name="sort_order_desc">倒序</string>
+    <string name="scroll_top">回到顶部</string>
     <string name="search_syntax_title">搜索用法</string>
-    <string name="search_syntax_message">标签名：$TAG=标签名$，也可以只写 $标签名$\n表情名：@关键词@\n不带符号的词：表情名和标签名都算\n\n&amp; 表示同时满足，/ 表示任一满足（先算 &amp; 再算 /）。\n例：$TAG=猫$ &amp; @生气@ / $TAG=狗$ 表示「挂着猫标签、名字里有生气」或者「挂着狗标签」。\n\n输入 $ 时会给出标签候选，点一下补全。</string>
+    <string name="search_syntax_message">标签名：$TAG=标签名$，也可以只写 $标签名$\n表情名：@关键词@\n不带符号的词：表情名和标签名都算\n\n&amp; 表示同时满足，/ 表示任一满足（先算 &amp; 再算 /）。\n! 表示除：!$TAG=猫$ 表示不含猫标签，!@生气@ 表示名字里没有生气。\n例：$TAG=猫$ &amp; @生气@ / $TAG=狗$ 表示「挂着猫标签、名字里有生气」或者「挂着狗标签」。\n\n输入 $ 时会给出标签候选，点一下补全。</string>
     <string name="search_suggest_tag">标签：%1$s</string>
     <string name="tab_all">全部</string>
     <string name="tab_favorites">收藏</string>
@@ -43,6 +56,8 @@
     <string name="delete_confirm_message">确定要删除选中的表情吗？</string>
     <string name="delete_confirm_selected_message">确定要删除选中的 %1$d 个表情吗？</string>
     <string name="delete_confirm_single_message">确定要删除这个表情吗？</string>
+    <string name="delete_progress_title">正在删除</string>
+    <string name="delete_progress">正在删除第 %1$d / %2$d 个…</string>
 
     <!-- 权限与导入 -->
     <string name="toast_import_success">导入成功</string>
@@ -62,6 +77,8 @@
     <string name="import_folder_result">已从文件夹导入 %1$d 张</string>
     <string name="import_folder_empty">文件夹里没有图片</string>
     <string name="import_folder_unreadable">无法打开这个文件夹</string>
+    <string name="import_folder_scanning">正在读取文件夹…（已找到 %1$d 张）</string>
+    <string name="import_folder_truncated">（一次能导入的张数已到上限，后面的没有导入）</string>
     <string name="import_folder_default_name">文件夹</string>
     <string name="import_use_files">从文件导入</string>
     <string name="import_grant_media">允许读取相册（导入时用原文件名）</string>
@@ -299,6 +316,16 @@
     <string name="btn_organize">整理</string>
     <string name="tag_match_all">同时满足</string>
     <string name="tag_match_any">任一满足</string>
+    <string name="tag_match_exclude">都不含</string>
+    <!-- 面板顶上那行功能 chip（v0.2.004，用户 m10194 / m10201）：v0.2.005 起只剩新建 / 管理 -->
+    <string name="tag_action_new">新建</string>
+    <string name="tag_action_manage">管理</string>
+    <!-- 已选标签在筛选条上的合并方式前缀（v0.2.005，用户 m10282）：跟搜索语法同一套写法 -->
+    <string name="tag_mode_symbol_all">&amp;</string>
+    <string name="tag_mode_symbol_any">|</string>
+    <string name="tag_mode_symbol_not">!</string>
+    <!-- 已选标签的无障碍描述：%1$s = 如「&amp; 猫」，%2$s = 同时满足 / 任一满足 / 都不含 -->
+    <string name="filter_tag_chip_desc">%1$s，%2$s；点标签换交并非，点 × 删除</string>
     <string name="tag_filter_clear">清空筛选</string>
     <string name="tag_manage_title">管理标签</string>
     <string name="tag_manage_empty">暂无标签</string>
@@ -370,6 +397,8 @@
     <string name="source_enable_delete_message">打开后，每次导入成功都会删除这次导入选中的原文件（相册里的原图），删除后无法找回。\n\n程序只删除这一次导入时选中的文件，不扫描相册，也不改动其它文件。\n\n「压缩成 zip」会先把文件收进压缩包再删除，比这一项多留一份备份。</string>
     <string name="source_enable_ok">我明白，打开</string>
     <string name="source_zip_title">正在压缩原文件</string>
+    <string name="source_zip_progress">正在压缩第 %1$d / %2$d 个…</string>
+    <string name="source_delete_progress">正在删除第 %1$d / %2$d 个原文件…</string>
     <string name="source_zip_failed">压缩包没写成，原文件保持不动</string>
     <string name="source_zip_done">原文件已收进「%1$s」</string>
     <string name="source_delete_title">删除原文件？</string>
@@ -446,6 +475,7 @@
     <string name="storage_clear_cache_confirm_title">清除缓存？</string>
     <string name="storage_clear_cache_confirm_message">将删除 %1$s 的临时文件（缩略图、压缩预览等）。下次查看这些图片时需要重新生成，表情与标签不受影响。</string>
     <string name="storage_clear_cache_working">正在清理…</string>
+    <string name="storage_clear_cache_progress">正在清理第 %1$d / %2$d 个文件…</string>
     <string name="storage_clear_cache_done">已清除缓存，释放 %1$s</string>
 
     <!-- ============ 大表情压缩 · 三级页（v0.1.407；编码方式可切换见 v0.1.408） ============ -->
@@ -536,7 +566,7 @@
     <!-- ==================== 画面相近的组（感知哈希，v0.1.413 起只谈相似度百分比） ==================== -->
     <string name="similar_group_title">%1$d 张画面相近 · 相似度 %2$d%%</string>
     <string name="similar_group_wasted">只保留一张可省 %1$s</string>
-    <string name="similar_group_hint">点缩略图选中要删除的，长按查看详情</string>
+    <string name="similar_group_hint">点缩略图选中要删除的，长按查看详情；本来就不是同一张，点「忽略这组」</string>
     <string name="similar_thumb_desc">%1$s，点击选中要删除的这一张</string>
     <string name="similar_selected">已选 %1$d 张 · 可省 %2$s</string>
     <string name="similar_delete">删掉选中的</string>
@@ -547,6 +577,24 @@
     <string name="similar_delete_done">已删掉 %1$d 张，省下 %2$s</string>
     <string name="similar_delete_partial">已删掉 %1$d 张，另有 %2$d 张没删掉</string>
     <string name="similar_delete_failed">删除失败：%1$s</string>
+    <!-- ==================== 「不像同一张」的忽略名单（v0.2.006，用户 m10497） ==================== -->
+    <string name="similar_ignore_group">忽略这组</string>
+    <string name="similar_ignore_title">忽略这 %1$d 张之间的相似？</string>
+    <string name="similar_ignore_message">这一组里每两张都会被记下来，之后不再被判为「画面相近」。表情本身不受影响、也不会被删掉，随时可以在「忽略列表」里恢复。</string>
+    <string name="similar_ignore_ok">忽略</string>
+    <string name="similar_ignore_done">这组已忽略（记下 %1$d 对）</string>
+    <string name="similar_ignore_list">忽略列表（%1$d）</string>
+    <string name="similar_ignore_list_title">忽略列表</string>
+    <string name="similar_ignore_list_count">共 %1$d 对 · 点「不再忽略」可以恢复</string>
+    <string name="similar_ignore_list_empty">还没有忽略过任何一对。\n\n在「画面相近」的组里点「忽略这组」，那几张之间就不会再被判为相近。</string>
+    <string name="similar_ignore_row_desc">%1$s ↔ %2$s</string>
+    <string name="similar_ignore_remove">不再忽略</string>
+    <string name="similar_ignore_removed">已恢复 %1$s ↔ %2$s</string>
+    <string name="similar_ignore_clear">全部恢复</string>
+    <string name="similar_ignore_clear_title">恢复全部 %1$d 对？</string>
+    <string name="similar_ignore_clear_message">恢复之后这些「不像同一张」的判定就都没了，检索页会按原来的规则重新分组。表情本身一直不受影响。</string>
+    <string name="similar_ignore_cleared">已恢复全部 %1$d 对</string>
+    <string name="similar_ignore_close">关闭</string>
     <!-- ==================== 合并检索页（v0.1.411：两段同页，一次比对） ==================== -->
     <string name="search_summary">全库 %1$d 张 · 内容完全相同 %2$d 组 · 画面相近 %3$d 组</string>
     <string name="search_scan_title">正在比对</string>

@@ -8,7 +8,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import java.io.File
 
 /**
- * 「UI 设置」里用户能自己调的那几项：主题色、深浅色、悬浮球的长相和大小。
+ * 「UI 设置」里用户能自己调的那几项：主题色、深浅色、悬浮球的长相和大小、表情列表的排序方式。
  *
  * 单独一份 SharedPreferences（不跟发送模块的混在一起），而且读取只依赖 Context，
  * 所以 Application、每个 Activity、悬浮球 Service 都能直接问它要值：
@@ -22,6 +22,8 @@ object UiPrefs {
     private const val KEY_NIGHT = "night_mode"
     private const val KEY_BALL_STYLE = "ball_style"
     private const val KEY_BALL_SIZE = "ball_size_dp"
+    private const val KEY_SORT_FIELD = "sort_field"
+    private const val KEY_SORT_DESC = "sort_desc"
 
     // ---------------- 主题色 ----------------
 
@@ -146,6 +148,35 @@ object UiPrefs {
     fun setBallSizeDp(context: Context, dp: Int) {
         prefs(context).edit()
             .putInt(KEY_BALL_SIZE, dp.coerceIn(BALL_SIZE_MIN_DP, BALL_SIZE_MAX_DP))
+            .apply()
+    }
+
+    // ---------------- 列表排序 ----------------
+
+    /** 按添加时间排（默认，跟老版本「最新在前」的观感一致）。 */
+    const val SORT_TIME = "time"
+
+    /** 按名称排，中文按系统的排序规则（拼音）比。 */
+    const val SORT_NAME = "name"
+
+    /** 按文件大小排。 */
+    const val SORT_SIZE = "size"
+
+    /** 顺序就是排序弹窗里单选的顺序；存着的老值不认识了就回落到添加时间。 */
+    val SORT_FIELDS = listOf(SORT_TIME, SORT_NAME, SORT_SIZE)
+
+    fun sortField(context: Context): String {
+        val saved = prefs(context).getString(KEY_SORT_FIELD, SORT_TIME) ?: SORT_TIME
+        return if (saved in SORT_FIELDS) saved else SORT_TIME
+    }
+
+    /** 倒序（新 → 旧 / 大 → 小 / Z → A）。默认 true：v0.2.002 之前一直是「最新在前」。 */
+    fun sortDesc(context: Context): Boolean = prefs(context).getBoolean(KEY_SORT_DESC, true)
+
+    fun setSort(context: Context, field: String, desc: Boolean) {
+        prefs(context).edit()
+            .putString(KEY_SORT_FIELD, if (field in SORT_FIELDS) field else SORT_TIME)
+            .putBoolean(KEY_SORT_DESC, desc)
             .apply()
     }
 

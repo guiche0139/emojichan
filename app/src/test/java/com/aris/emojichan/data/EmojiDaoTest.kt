@@ -223,7 +223,7 @@ class EmojiDaoTest {
         assertEquals(listOf("/data/emojis/a.png"), dao.getFilePathsByIds(listOf(a)))
     }
 
-    // ---------- 标签过滤（AND / OR） ----------
+    // ---------- 标签过滤（每个标签各自交 / 并 / 非） ----------
 
     @Test
     fun tagFilterMatchesAllOrAny() = runTest {
@@ -238,11 +238,94 @@ class EmojiDaoTest {
         dao.addTagsTo(listOf(onlyCat), listOf(cat))
         dao.addTagsTo(listOf(onlyCute), listOf(cute))
 
-        val all = find(EmojiFilter(tagIds = listOf(cat, cute), tagMatchAll = true))
+        // 不写 tagModes 就是默认的「交」
+        val all = find(EmojiFilter(tagIds = listOf(cat, cute)))
         assertEquals(listOf(both), all.map { it.id })
 
-        val any = find(EmojiFilter(tagIds = listOf(cat, cute), tagMatchAll = false))
+        val any = find(
+            EmojiFilter(tagIds = listOf(cat, cute), tagModes = mapOf(cat to TagMode.ANY, cute to TagMode.ANY))
+        )
         assertEquals(setOf(both, onlyCat, onlyCute), any.map { it.id }.toSet())
+    }
+
+    /** 「除」：选中的标签一个都不含（用户 m10115）。 */
+    @Test
+    fun tagFilterExcludesSelected() = runTest {
+        val both = dao.importEmoji(emoji("both"), null)
+        val onlyCat = dao.importEmoji(emoji("onlyCat"), null)
+        val onlyCute = dao.importEmoji(emoji("onlyCute"), null)
+        val none = dao.importEmoji(emoji("none"), null)
+
+        val cat = dao.ensureTag("猫")!!
+        val cute = dao.ensureTag("可爱")!!
+        dao.addTagsTo(listOf(both), listOf(cat, cute))
+        dao.addTagsTo(listOf(onlyCat), listOf(cat))
+        dao.addTagsTo(listOf(onlyCute), listOf(cute))
+
+        val notCat = find(EmojiFilter(tagIds = listOf(cat), tagModes = mapOf(cat to TagMode.EXCLUDE)))
+        assertEquals(setOf(onlyCute, none), notCat.map { it.id }.toSet())
+
+        // 选了多个标签就是「这几个都不要」
+        val neither = find(
+            EmojiFilter(tagIds = listOf(cat, cute), tagModes = mapOf(cat to TagMode.EXCLUDE, cute to TagMode.EXCLUDE))
+        )
+        assertEquals(listOf(none), neither.map { it.id })
+    }
+
+    /**
+     * 每个标签各有各的合并方式（用户 m10282）：符号挂在每颗标签上，同一个标签列表只要换一下
+     * 某颗标签的符号，结果就完全不同 —— 这是把模式从全局改成 per-tag 的理由。
+     *
+     * 读法跟搜索框那套语法同一套优先级：& 比 | 紧。
+     */
+    @Test
+    fun tagFilterMixesModesPerTag() = runTest {
+        val both = dao.importEmoji(emoji("both"), null)
+        val onlyCat = dao.importEmoji(emoji("onlyCat"), null)
+        val onlyCute = dao.importEmoji(emoji("onlyCute"), null)
+        val onlyDog = dao.importEmoji(emoji("onlyDog"), null)
+        dao.importEmoji(emoji("none"), null)
+
+        val cat = dao.ensureTag("猫")!!
+        val cute = dao.ensureTag("可爱")!!
+        val dog = dao.ensureTag("狗")!!
+        dao.addTagsTo(listOf(both), listOf(cat, cute))
+        dao.addTagsTo(listOf(onlyCat), listOf(cat))
+        dao.addTagsTo(listOf(onlyCute), listOf(cute))
+        dao.addTagsTo(listOf(onlyDog), listOf(dog))
+
+        // 猫按默认的「交」必须要有，可爱标成「并」：有猫，或者有可爱
+        val anyCute = find(
+            EmojiFilter(tagIds = listOf(cat, cute), tagModes = mapOf(cute to TagMode.ANY))
+        )
+        assertEquals(setOf(both, onlyCat, onlyCute), anyCute.map { it.id }.toSet())
+
+        // 同一个列表，只把可爱换成「非」：有猫、而且不能有可爱
+        val notCute = find(
+            EmojiFilter(tagIds = listOf(cat, cute), tagModes = mapOf(cute to TagMode.EXCLUDE))
+        )
+        assertEquals(listOf(onlyCat), notCute.map { it.id })
+
+        // & 比 | 紧：「猫 & 可爱」要全有，或者有狗
+        val mixed = find(
+            EmojiFilter(tagIds = listOf(cat, cute, dog), tagModes = mapOf(dog to TagMode.ANY))
+        )
+        assertEquals(setOf(both, onlyDog), mixed.map { it.id }.toSet())
+    }
+
+    /** 「除」在搜索框里用 ! 写：条件整项取反。 */
+    @Test
+    fun notTermNegatesCondition() = runTest {
+        dao.importEmoji(emoji("angryCat"), "猫")
+        dao.importEmoji(emoji("happyCat"), "猫")
+        dao.importEmoji(emoji("angryDog"), "狗")
+
+        val calm = find(EmojiFilter(expr = EmojiFilter.parse("!@angry@")))
+        assertEquals(listOf("happyCat"), calm.map { it.name })
+
+        // 关键词写法取反：名字和标签都不含「猫」
+        val notCat = find(EmojiFilter(expr = EmojiFilter.parse("!\$TAG=猫\$")))
+        assertEquals(listOf("angryDog"), notCat.map { it.name })
     }
 
     /** 保留 v0.1.305 的旧行为：普通关键词也要能命中标签名。 */
@@ -264,8 +347,7 @@ class EmojiDaoTest {
         val ids = find(
             EmojiFilter(
                 expr = EmojiFilter.parse("\$TAG:猫"),
-                tagIds = listOf(dao.ensureTag("狗")!!),
-                tagMatchAll = true
+                tagIds = listOf(dao.ensureTag("狗")!!)
             )
         ).map { it.id }.toSet()
         assertEquals(setOf(a, b), ids)
@@ -335,6 +417,15 @@ class EmojiDaoTest {
         // 没写右括号也照算：$ 遇到 & 截断，@ 一直吃到结尾
         assertEquals(listOf(listOf(SearchTerm.Tag("猫"))), EmojiFilter.parse("\$TAG:猫")?.groups)
         assertEquals(listOf(listOf(SearchTerm.Name("猫猫"))), EmojiFilter.parse("@猫猫")?.groups)
+
+        // ! 开头的项取反（下拉面板上的「除」）；三种条件都能加，多敲一个 ! 还是一个「除」
+        assertEquals(listOf(listOf(SearchTerm.Keyword("a", true))), EmojiFilter.parse("!a")?.groups)
+        assertEquals(listOf(listOf(SearchTerm.Tag("猫", true))), EmojiFilter.parse("!\$TAG=猫\$")?.groups)
+        assertEquals(
+            listOf(listOf(SearchTerm.Keyword("a"), SearchTerm.Name("猫", true))),
+            EmojiFilter.parse("a & !@猫@")?.groups
+        )
+        assertEquals(listOf(listOf(SearchTerm.Keyword("a", true))), EmojiFilter.parse("!!a")?.groups)
     }
 
     /** LIKE 的通配符必须转义，否则搜「%」会把全部表情捞出来。 */

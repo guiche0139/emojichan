@@ -5,16 +5,20 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aris.emojichan.R
+import com.aris.emojichan.UiPrefs
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
 import com.aris.emojichan.data.ImageFeatureEntity
 import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.data.TagMode
 import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.FolderImporter
 import com.aris.emojichan.util.ImageUtil
 import java.io.InputStream
 import java.io.OutputStream
+import java.text.Collator
+import java.util.Locale
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,6 +32,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -51,15 +56,56 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedTagIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedTagIds: StateFlow<Set<Long>> = _selectedTagIds.asStateFlow()
 
-    /** true = 同时满足所有标签（AND），false = 任一满足（OR）。 */
-    private val _tagMatchAll = MutableStateFlow(true)
-    val tagMatchAll: StateFlow<Boolean> = _tagMatchAll.asStateFlow()
+    /**
+     * 每个已选标签各自怎么合并（交 / 并 / 非，用户 m10282）。
+     *
+     * 只记「改过」的那些：表里没有的标签按 [TagMode.ALL]（交）算 —— 新选一个标签
+     * 默认就是「交」，跟筛选条上那颗 chip 的 & 前缀对得上。
+     */
+    private val _tagModes = MutableStateFlow<Map<Long, TagMode>>(emptyMap())
+    val tagModes: StateFlow<Map<Long, TagMode>> = _tagModes.asStateFlow()
 
     private val _isSelectionMode = MutableStateFlow(false)
     val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
 
     private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
+
+    /** 一种排序：按什么排（[UiPrefs.SORT_TIME] / [UiPrefs.SORT_NAME] / [UiPrefs.SORT_SIZE]）+ 是不是倒序。 */
+    data class SortSpec(val field: String, val desc: Boolean)
+
+    /**
+     * 当前排序方式（v0.2.003，用户 m09998）：按添加时间 / 名称 / 文件大小，正序或倒序。
+     *
+     * 偏好存在 [UiPrefs] 里 —— 跟主题色一样属于「这台机器上想怎么看」，不写进数据库。
+     * 排序本身在这一层做、不塞进 SQL 的 ORDER BY：改排序时列表已经在手上，换个顺序就够，
+     * 不用再查一遍库（几十张图重查一次的代价远大于排一遍）。
+     */
+    private val _sort: MutableStateFlow<SortSpec> = MutableStateFlow(
+        SortSpec(UiPrefs.sortField(getApplication()), UiPrefs.sortDesc(getApplication()))
+    )
+    val sort: StateFlow<SortSpec> = _sort.asStateFlow()
+
+    fun setSort(field: String, desc: Boolean) {
+        UiPrefs.setSort(getApplication(), field, desc)
+        _sort.value = SortSpec(field, desc)
+    }
+
+    /**
+     * 真正排一遍。主字段比完拿 id 兜底：同一批导入的表情 createTime 常常一模一样，
+     * 不兜底的话两次排出来的先后可能不同，看着像列表在乱跳。
+     */
+    private fun sorted(list: List<EmojiEntity>, spec: SortSpec): List<EmojiEntity> {
+        if (list.size < 2) return list
+        val collator = Collator.getInstance(Locale.getDefault())
+        val primary = when (spec.field) {
+            UiPrefs.SORT_NAME -> Comparator<EmojiEntity> { a, b -> collator.compare(a.name, b.name) }
+            UiPrefs.SORT_SIZE -> Comparator<EmojiEntity> { a, b -> a.fileSize.compareTo(b.fileSize) }
+            else -> Comparator<EmojiEntity> { a, b -> a.createTime.compareTo(b.createTime) }
+        }
+        val cmp = primary.thenBy { it.id }
+        return if (spec.desc) list.sortedWith(cmp.reversed()) else list.sortedWith(cmp)
+    }
 
     /**
      * 列表数据：收藏 / 搜索条件 / 标签 的组合过滤。
@@ -71,16 +117,19 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     val emojis: StateFlow<List<EmojiEntity>> = combine(
         _searchQuery,
         _selectedTagIds,
-        _tagMatchAll,
+        _tagModes,
         _favoritesOnly
-    ) { query, tagIds, matchAll, favoritesOnly ->
+    ) { query, tagIds, tagModes, favoritesOnly ->
         EmojiFilter(
             favoritesOnly = favoritesOnly,
             expr = EmojiFilter.parse(query),
             tagIds = tagIds.toList(),
-            tagMatchAll = matchAll
+            tagModes = tagModes
         )
     }.flatMapLatest { filter -> repository.observeFiltered(filter) }
+        .combine(_sort) { list, spec -> list to spec }
+        // 排序交给后台线程：几千张时按名称排要跑一遍 Collator，不能卡在换顺序那一帧
+        .map { (list, spec) -> withContext(Dispatchers.Default) { sorted(list, spec) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** 全部标签，过滤区与标签管理都用它。 */
@@ -154,16 +203,32 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleTagFilter(tagId: Long) {
         val current = _selectedTagIds.value.toMutableSet()
-        if (!current.add(tagId)) current.remove(tagId)
+        if (current.add(tagId)) {
+            // 新选中的标签默认「交」：表里不写它，读的时候按 ALL 兜底
+            _selectedTagIds.value = current
+            return
+        }
+        current.remove(tagId)
         _selectedTagIds.value = current
+        // 标签撤掉了，它那档合并方式也一并清掉，下次选回来还是「交」
+        _tagModes.update { it - tagId }
     }
 
     fun clearTagFilter() {
         _selectedTagIds.value = emptySet()
+        _tagModes.value = emptyMap()
     }
 
-    fun setTagMatchAll(matchAll: Boolean) {
-        _tagMatchAll.value = matchAll
+    /** 点筛选条上那颗标签：交 → 并 → 非 → 交（用户 m10282）。 */
+    fun cycleTagMode(tagId: Long) {
+        _tagModes.update { modes ->
+            val next = when (modes[tagId] ?: TagMode.ALL) {
+                TagMode.ALL -> TagMode.ANY
+                TagMode.ANY -> TagMode.EXCLUDE
+                TagMode.EXCLUDE -> TagMode.ALL
+            }
+            modes + (tagId to next)
+        }
     }
 
     fun toggleSelectionMode() {
@@ -235,11 +300,22 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
      * 整个过程在 IO 线程上跑，读完再一次性入库；标签只在第一次遇到时创建，同一个文件夹
      * 里的图片共用同一个标签 id。
      *
+     * 分两段报进度（v0.2.003 起，用户 m09930）：先只扫描，[onScanning] 报「已经找到多少张」
+     * （这时分母还没有，进度条转圈）；扫完拿到总数，[onProgress] 再按「已处理 / 总数」报。
+     *
      * @return 成功入库的条数；无法读取该文件夹返回 -1。
      */
-    suspend fun importFolder(treeUri: Uri): Int = withContext(Dispatchers.IO) {
+    suspend fun importFolder(
+        treeUri: Uri,
+        onScanning: (Int) -> Unit = {},
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): FolderImport = withContext(Dispatchers.IO) {
         try {
-            val batches = FolderImporter.collect(getApplication(), treeUri) ?: return@withContext -1
+            val app = getApplication<android.app.Application>()
+            val plan = FolderImporter.plan(app, treeUri, onScanning)
+                ?: return@withContext FolderImport(-1, truncated = false)
+            val entries = plan.entries
+            val batches = FolderImporter.decode(app, entries, onProgress)
             val tagIds = mutableMapOf<String, Long>()
             var imported = 0
             batches.forEach { batch ->
@@ -251,14 +327,17 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
                     imported += repository.insertAll(batch.emojis, ids).count { it > 0 }
                 }
             }
-            imported
+            FolderImport(imported, plan.truncated)
         } catch (e: Exception) {
             e.printStackTrace()
             _message.value =
                 str(R.string.msg_operation_failed, e.message ?: str(R.string.msg_unknown_error))
-            0
+            FolderImport(0, truncated = false)
         }
     }
+
+    /** 文件夹导入的结果：入库条数，以及清单有没有被单次上限截断过（用户 m09998）。 */
+    data class FolderImport(val count: Int, val truncated: Boolean)
 
     /**
      * 删除一组表情：**先删文件、确认文件已消失，再删数据库记录**。
@@ -266,15 +345,18 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
      * 顺序不能反。若先删记录再删文件，文件删除失败（被占用、权限等）时记录已经没了，
      * 文件会永久残留在私有目录且无从追溯；反过来最坏情况只是记录保留、下次还能重试。
      *
+     * [onProgress] 每处理一个报一次（已处理, 总数），给进度条用（v0.2.003 起，用户 m09940）。
+     *
      * @return 文件删除失败、因而保留了记录的条目数。
      */
-    private suspend fun deleteWithFiles(ids: List<Long>): Int {
+    private suspend fun deleteWithFiles(ids: List<Long>, onProgress: (Int, Int) -> Unit = { _, _ -> }): Int {
         if (ids.isEmpty()) return 0
         val emojis = repository.getByIds(ids)
         val deletableIds = mutableListOf<Long>()
         var failedCount = 0
         withContext(Dispatchers.IO) {
-            emojis.forEach { emoji ->
+            emojis.forEachIndexed { index, emoji ->
+                onProgress(index + 1, emojis.size)
                 if (ImageUtil.deleteFile(emoji.filePath)) {
                     deletableIds.add(emoji.id)
                 } else {
@@ -286,22 +368,33 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         return failedCount
     }
 
-    fun deleteSelected() {
-        viewModelScope.launch(handler) {
-            try {
-                val failed = deleteWithFiles(_selectedIds.value.toList())
-                if (failed > 0) {
-                    _message.value = str(R.string.msg_delete_partial_failed, failed)
-                }
-                _selectedIds.value = emptySet()
-                _isSelectionMode.value = false
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _message.value = str(
-                    R.string.msg_delete_failed,
-                    e.message ?: str(R.string.msg_unknown_error)
-                )
+    /**
+     * 主页删除选中的那几个：删**当前选中的那些**，清理选择态、报错也照旧，
+     * 只是把「删到第几个」报给调用方，进度框由页面自己管（v0.2.003 起，用户 m09940）。
+     *
+     * 之所以改成挂起函数：进度框得跟着这一趟活儿的头尾开关，而 [viewModelScope] 里的
+     * 协程页面等不到。
+     *
+     * @return 文件删不掉、因而保留记录的条数；出错返回 -1。
+     */
+    suspend fun deleteSelectedWithProgress(
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): Int = withContext(Dispatchers.IO) {
+        try {
+            val failed = deleteWithFiles(_selectedIds.value.toList(), onProgress)
+            if (failed > 0) {
+                _message.value = str(R.string.msg_delete_partial_failed, failed)
             }
+            _selectedIds.value = emptySet()
+            _isSelectionMode.value = false
+            failed
+        } catch (e: Exception) {
+            e.printStackTrace()
+            _message.value = str(
+                R.string.msg_delete_failed,
+                e.message ?: str(R.string.msg_unknown_error)
+            )
+            -1
         }
     }
 
@@ -695,10 +788,12 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
      * 重复页要删的那几张。刻意和主页、详情页共用同一套「先删文件、确认删掉才删记录」，
      * 不另起一套删除逻辑。
      *
+     * [onProgress] 每处理一张报一次（已处理, 总数），给进度条用（v0.2.003 起，用户 m09940）。
+     *
      * @return 文件删除失败、因而保留下来的张数。
      */
-    suspend fun deleteEmojisForTool(ids: List<Long>): Int =
-        withContext(Dispatchers.IO) { deleteWithFiles(ids) }
+    suspend fun deleteEmojisForTool(ids: List<Long>, onProgress: (Int, Int) -> Unit = { _, _ -> }): Int =
+        withContext(Dispatchers.IO) { deleteWithFiles(ids, onProgress) }
 
     /** 清单里记的应用版本号；取不到就写问号 —— 取版本号失败不该把整个备份带崩。 */
     private fun appVersion(): String = runCatching {

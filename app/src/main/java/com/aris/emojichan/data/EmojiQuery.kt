@@ -42,25 +42,52 @@ object EmojiQuery {
             sql.append(")")
         }
 
-        // 表达式里已经写了标签条件（$…$）时，面板上的标签 chip 不参与：两者是 AND 关系，
+        // 表达式里已经写了「要某标签」的条件（$…$）时，面板上的标签 chip 不参与：两者是 AND 关系，
         // 叠起来多半只会撞出空结果（$TAG:猫$ 再配一个「狗」chip），用户看到的是莫名其妙的空白。
-        val exprHasTag = groups.any { group -> group.any { it is SearchTerm.Tag } }
+        // 「除」的写法（!$TAG=猫$）不占这个位置：它跟 chip 叠起来是「要 A 且不要 B」，是有意义的结果。
+        val exprHasTag = groups.any { group -> group.any { it is SearchTerm.Tag && !it.not } }
         if (filter.tagIds.isNotEmpty() && !exprHasTag) {
             val ids = filter.tagIds.distinct().take(MAX_TAG_IDS)
-            val holders = ids.joinToString(", ") { "?" }
-            if (filter.tagMatchAll) {
-                // 同时满足：先捞出「命中任一标签」的表情，再要求命中数等于标签数
-                sql.append(" AND id IN (SELECT emojiId FROM emoji_tags WHERE tagId IN (")
-                sql.append(holders)
-                sql.append(") GROUP BY emojiId HAVING COUNT(DISTINCT tagId) = ")
-                sql.append(ids.size)
-                sql.append(")")
-            } else {
-                sql.append(" AND id IN (SELECT emojiId FROM emoji_tags WHERE tagId IN (")
-                sql.append(holders)
+            // 每个标签各有各的合并方式（用户 m10282），按方式分成三组：
+            // 非 → 挂着其中任一个的整段排除（NOT IN 里没有 NULL，安全）；
+            // 交 → 这一组全都要有（先捞出「命中任一」的，再要求命中数等于个数）；
+            // 并 → 这一组有一个就行。
+            // 交、并两组的读法跟搜索框那套语法同一套优先级（& 比 | 紧）：两组都有时是
+            // 「交的那组都要有」或者「并的那组里有一个」；只写一组时就是那一组自己的意思。
+            val notIds = ids.filter { filter.modeOf(it) == TagMode.EXCLUDE }
+            val anyIds = ids.filter { filter.modeOf(it) == TagMode.ANY }
+            val allIds = ids.filter { filter.modeOf(it) == TagMode.ALL }
+            if (notIds.isNotEmpty()) {
+                sql.append(" AND id NOT IN (SELECT emojiId FROM emoji_tags WHERE tagId IN (")
+                sql.append(notIds.joinToString(", ") { "?" })
                 sql.append("))")
+                args.addAll(notIds)
             }
-            args.addAll(ids)
+            val anyCond = if (anyIds.isEmpty()) null else {
+                "id IN (SELECT emojiId FROM emoji_tags WHERE tagId IN (" +
+                    anyIds.joinToString(", ") { "?" } + "))"
+            }
+            val allCond = if (allIds.isEmpty()) null else {
+                "id IN (SELECT emojiId FROM emoji_tags WHERE tagId IN (" +
+                    allIds.joinToString(", ") { "?" } +
+                    ") GROUP BY emojiId HAVING COUNT(DISTINCT tagId) = " + allIds.size + ")"
+            }
+            when {
+                anyCond != null && allCond != null -> {
+                    // 括号不能省：外面还挂着搜索条件、非标签、收藏这些 AND
+                    sql.append(" AND (").append(allCond).append(" OR ").append(anyCond).append(")")
+                    args.addAll(allIds)
+                    args.addAll(anyIds)
+                }
+                anyCond != null -> {
+                    sql.append(" AND ").append(anyCond)
+                    args.addAll(anyIds)
+                }
+                allCond != null -> {
+                    sql.append(" AND ").append(allCond)
+                    args.addAll(allIds)
+                }
+            }
         }
 
         sql.append(" ORDER BY createTime DESC")
@@ -70,7 +97,7 @@ object EmojiQuery {
     /** 一项条件对应的 SQL 片段；用到的参数就地塞进 [args]。 */
     private fun termSql(term: SearchTerm, args: MutableList<Any?>): String {
         val pattern = "%" + escapeLike(term.text.trim()) + "%"
-        return when (term) {
+        val body = when (term) {
             is SearchTerm.Name -> {
                 args.add(pattern)
                 "name LIKE ?$LIKE_ESCAPE"
@@ -88,6 +115,8 @@ object EmojiQuery {
                     " INNER JOIN tags t ON t.id = l.tagId WHERE t.name LIKE ?$LIKE_ESCAPE))"
             }
         }
+        // 「除」：整项取反。在外面包一层 NOT 而不是塞进 LIKE，三种写法才能共用同一段 SQL。
+        return if (term.not) "NOT ($body)" else body
     }
 
     /**

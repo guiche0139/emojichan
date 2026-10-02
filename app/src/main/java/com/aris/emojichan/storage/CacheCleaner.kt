@@ -18,17 +18,37 @@ import java.io.File
  */
 object CacheCleaner {
 
-    /** 清一次，返回实际释放的字节数。 */
-    suspend fun clear(context: Context): Long {
+    /**
+     * 清一次，返回实际释放的字节数。
+     *
+     * [onProgress] 每删一个文件报一次（已删, 待删总数）。v0.2.003 起这么删（用户 m09940）：
+     * Glide 清完磁盘缓存之后把剩下的文件列出来逐个删 —— 缓存里躺着几千个小文件，
+     * 一根不动的进度条看不出它还在动。
+     */
+    suspend fun clear(context: Context, onProgress: (Int, Int) -> Unit = { _, _ -> }): Long {
         val glide = withContext(Dispatchers.Main) { runCatching { Glide.get(context) }.getOrNull() }
         return withContext(Dispatchers.IO) {
             val before = StorageUsage.dirSize(context.cacheDir)
             if (glide != null) runCatching { glide.clearDiskCache() }
+            val leftovers = mutableListOf<File>()
+            collectFiles(context.cacheDir, leftovers)
+            leftovers.forEachIndexed { index, file ->
+                runCatching { file.delete() }
+                onProgress(index + 1, leftovers.size)
+            }
             deleteChildren(context.cacheDir)
             if (glide != null) {
                 withContext(Dispatchers.Main) { runCatching { glide.clearMemory() } }
             }
             (before - StorageUsage.dirSize(context.cacheDir)).coerceAtLeast(0L)
+        }
+    }
+
+    /** 把目录底下所有文件（不含目录本身）列出来，给「删一个报一次数」用。 */
+    private fun collectFiles(dir: File?, out: MutableList<File>) {
+        val children = dir?.listFiles() ?: return
+        children.forEach { child ->
+            if (child.isDirectory) collectFiles(child, out) else out.add(child)
         }
     }
 

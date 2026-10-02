@@ -17,6 +17,7 @@ import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
 import android.text.format.Formatter
+import android.util.DisplayMetrics
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -27,22 +28,25 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.PopupWindow
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.LinearSmoothScroller
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.data.EmojiDefaults
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.data.TagMode
 import com.aris.emojichan.sender.AutoSendService
 import com.aris.emojichan.sender.BallScope
 import com.aris.emojichan.sender.BallTileService
@@ -51,6 +55,7 @@ import com.aris.emojichan.sender.SendLog
 import com.aris.emojichan.storage.ExportTarget
 import com.aris.emojichan.storage.ImageExporter
 import com.aris.emojichan.storage.StorageActivity
+import com.aris.emojichan.util.BusyDialog
 import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.EmojiImport
 import com.aris.emojichan.util.ImageUtil
@@ -96,7 +101,7 @@ private const val SUGGESTION_GAP_DP = 4
 private data class FilterState(
     val tags: List<TagEntity>,
     val ids: Set<Long>,
-    val matchAll: Boolean,
+    val tagModes: Map<Long, TagMode>,
     val favoritesOnly: Boolean
 )
 
@@ -105,6 +110,12 @@ private data class SearchSuggestion(val label: String, val insert: String)
 
 /** 悬浮球服务从 start() 到真的把球挂上，中间隔着一次 onCreate；这段时间 isRunning 还是 false。 */
 private const val OVERLAY_SWITCH_SETTLE_MS = 600L
+
+/** 网格往下滚过这么多 dp 才让「回到置顶」露头，免得刚进列表就挂着一颗按钮（用户 m09998）。 */
+private const val SCROLL_TOP_SHOW_DP = 300
+
+/** 「回到置顶」的滚屏速度（毫秒 / 英寸）：系统默认 25，几千张时能滑好几秒（用户 m10115）。 */
+private const val SCROLL_TOP_MS_PER_INCH = 4f
 
 /** ACTION_PICK_IMAGES 一次最多让选几张（系统另有上限 [MediaStore.getPickImagesMaxLimit]）。 */
 private const val MAX_PICK_IMAGES = 100
@@ -126,6 +137,7 @@ class MainActivity : AppCompatActivity() {
     /** 筛选条最左侧的展开按钮，点开/收起标签面板。 */
     private lateinit var btnExpandTags: MaterialButton
     private lateinit var tagPanel: View
+    private lateinit var tagActions: ChipGroup
     private lateinit var tagGrid: ChipGroup
 
     /** 筛选条上现有的 chip，用来原位刷新选中态，而不是整条重建。 */
@@ -135,6 +147,12 @@ class MainActivity : AppCompatActivity() {
     private var tagPanelKey: String = ""
     private lateinit var emojiGrid: RecyclerView
     private lateinit var emptyView: TextView
+
+    /** 网格右下角那颗「回到置顶」，滚过一段距离才显示（用户 m09998）。 */
+    private lateinit var btnScrollTop: View
+
+    /** 标题行上的排序按钮。 */
+    private lateinit var btnSort: View
     private lateinit var bottomBar: LinearLayout
     private lateinit var btnImport: Button
     private lateinit var btnDelete: Button
@@ -441,9 +459,14 @@ class MainActivity : AppCompatActivity() {
         filterContainer = findViewById(R.id.filterContainer)
         btnExpandTags = findViewById(R.id.btnExpandTags)
         tagPanel = findViewById(R.id.tagPanelScroll)
+        tagActions = findViewById(R.id.tagActions)
         tagGrid = findViewById(R.id.tagGrid)
         emojiGrid = findViewById(R.id.emojiGrid)
         emptyView = findViewById(R.id.emptyView)
+        btnScrollTop = findViewById(R.id.btnScrollTop)
+        btnScrollTop.setOnClickListener { scrollGridToTop() }
+        btnSort = findViewById(R.id.btnSort)
+        btnSort.setOnClickListener { showSortDialog() }
         bottomBar = findViewById(R.id.bottomBar)
         btnImport = findViewById(R.id.btnImport)
         btnDelete = findViewById(R.id.btnDelete)
@@ -820,8 +843,9 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 自动发送的最后一击（微信「发送」/ QQ「确定」）替不替用户点。
-     * 开着就是全自动；关掉则流程停在按钮前，由用户点最后一下 —— 装在这个按钮上的
-     * 是「我看得见、我按下去」，比让程序猜更让人放心。
+     * **默认关闭**（v0.2.002 起，用户 m09774）：流程停在按钮前，由用户点最后一下 ——
+     * 装在这个按钮上的是「我看得见、我按下去」，比让程序猜更让人放心；
+     * 想要全自动就在这一行打开，打开时会先问一次。
      * 分享 / 相册 / 粘贴三条路都认它（粘贴路线以前是个例外，v0.1.322 起统一 —— 见 emc-2-014）。
      */
     private fun refreshConfirmSwitch() {
@@ -892,15 +916,19 @@ class MainActivity : AppCompatActivity() {
      * 跳去系统设置，回来时 onResume 接着把它打开。
      */
     private fun setOverlayEnabled(enable: Boolean) {
-        if (enable == FloatingBallService.isRunning) return
+        // 「想让球开着」这个愿望跟着开关一起记下来：页面重进、进程重启之后靠它把球自己挂回来
+        // （用户 m09897：默认就是开着的，不该每次都要用户手动开一次）
+        SenderPrefs.setBallOn(this, enable)
 
         if (!enable) {
+            if (!FloatingBallService.isRunning) return
             FloatingBallService.stop(this)
             Toast.makeText(this, R.string.overlay_stopped, Toast.LENGTH_SHORT).show()
             notifyBallStateChanged()
             return
         }
 
+        if (FloatingBallService.isRunning) return
         if (!Settings.canDrawOverlays(this)) {
             syncOverlaySwitch(false)
             pendingOverlayStart = true
@@ -1255,17 +1283,19 @@ class MainActivity : AppCompatActivity() {
                 searchJob = lifecycleScope.launch {
                     delay(SEARCH_DEBOUNCE_MS)
                     viewModel.setSearchQuery(query)
+                    jumpGridToTop()
                 }
                 // 候选只在本机内存里筛，不碰数据库，所以不用等防抖
                 refreshSearchSuggestions()
             }
         })
 
-        // 语法快捷键：$ @ & / 在手机键盘上要翻页才找得到，点一下直接插进光标处
+        // 语法快捷键：$ @ & / ! 在手机键盘上要翻页才找得到，点一下直接插进光标处
         addSyntaxChip(R.string.search_syntax_tag) { insertSearchText("\$TAG=\$") }
         addSyntaxChip(R.string.search_syntax_keyword) { insertSearchText("@") }
         addSyntaxChip(R.string.search_syntax_and) { insertSearchText("&") }
         addSyntaxChip(R.string.search_syntax_or) { insertSearchText("/") }
+        addSyntaxChip(R.string.search_syntax_not) { insertSearchText("!") }
         searchSyntaxHint.setOnClickListener { showSearchSyntaxDialog() }
 
         searchBar.setOnFocusChangeListener { _, hasFocus ->
@@ -1436,43 +1466,61 @@ class MainActivity : AppCompatActivity() {
         btnExpandTags.setOnClickListener { toggleTagPanel() }
 
         lifecycleScope.launch {
-            // tagMatchAll 必须算一路：它一变，面板里那颗「同时满足 / 任一满足」的文字就得跟着换
+            // tagModes 必须算一路：它一变，筛选条上标签 chip 的前缀（& / | / !）得跟着换
             combine(
                 viewModel.tags,
                 viewModel.selectedTagIds,
-                viewModel.tagMatchAll,
+                viewModel.tagModes,
                 viewModel.favoritesOnly
-            ) { tags, ids, matchAll, favorites -> FilterState(tags, ids, matchAll, favorites) }
+            ) { tags, ids, tagModes, favorites -> FilterState(tags, ids, tagModes, favorites) }
                 .collectLatest { state ->
-                    updateFilterChips(state.tags, state.ids, state.favoritesOnly)
-                    updateTagPanel(state.tags, state.ids, state.matchAll)
+                    updateFilterChips(state.tags, state.ids, state.tagModes, state.favoritesOnly)
+                    updateTagPanel(state.tags, state.ids)
                 }
         }
     }
 
-    /** 筛选条的内容：全部（清空筛选）、收藏、以及每一个正在生效的标签。 */
-    private fun updateFilterChips(tags: List<TagEntity>, ids: Set<Long>, favoritesOnly: Boolean) {
+    /**
+     * 筛选条的内容：全部（清空筛选）、收藏、以及每一个正在生效的标签。
+     *
+     * 已选标签写成「& 猫 ×」：前缀是它自己的合并方式（& 交 / | 并 / ! 非），点标签本身换下一种，
+     * 点尾巴上的 × 把它从筛选里去掉（用户 m10282）。
+     */
+    private fun updateFilterChips(
+        tags: List<TagEntity>,
+        ids: Set<Long>,
+        tagModes: Map<Long, TagMode>,
+        favoritesOnly: Boolean
+    ) {
         val selected = tags.filter { it.id in ids }
         val all = getString(R.string.filter_all)
         val favorites = getString(R.string.filter_favorites)
         val target = listOf<Triple<String, Long?, Int>>(
             Triple(all, null, 0),
             Triple(favorites, null, 1)
-        ) + selected.map { Triple(it.name, it.id, 2) }
+        ) + selected.map {
+            Triple(selectedTagLabel(it.name, tagModes[it.id] ?: TagMode.ALL), it.id, 2)
+        }
 
         if (filterChips.map { it.text.toString() } != target.map { it.first }) {
             // 结构变了才重建；按文案复用已有 chip，避免每次发射都闪一下
+            // （文案里带着合并方式，所以换运算也会走到这里重建）
             val reusable = filterChips.associateBy { it.text.toString() }
-            val chips = target.map { (name, tagId, kind) ->
-                reusable[name] ?: createFilterChip(name) {
-                    when (kind) {
-                        // 标签 chip 一律认 id：它在条上的位置会随别的标签进出来回变，认位置会点错
-                        2 -> tagId?.let { viewModel.toggleTagFilter(it) }
-                        1 -> viewModel.toggleFavoritesOnly()
-                        else -> {
-                            viewModel.setFavoritesOnly(false)
-                            viewModel.clearTagFilter()
-                        }
+            val chips = target.map { (label, tagId, kind) ->
+                val id = tagId
+                reusable[label] ?: when {
+                    // 标签 chip 一律认 id：它在条上的位置会随别的标签进出来回变，认位置会点错
+                    kind == 2 && id != null ->
+                        createSelectedTagChip(label, id, tagModes[id] ?: TagMode.ALL)
+                    kind == 1 -> createFilterChip(label) {
+                        viewModel.toggleFavoritesOnly()
+                        // 条件变了就回顶上：还停在旧结果的中段，看着像筛选没生效（用户 m10115）
+                        jumpGridToTop()
+                    }
+                    else -> createFilterChip(label) {
+                        viewModel.setFavoritesOnly(false)
+                        viewModel.clearTagFilter()
+                        jumpGridToTop()
                     }
                 }
             }
@@ -1527,6 +1575,29 @@ class MainActivity : AppCompatActivity() {
         LinearLayout.LayoutParams.WRAP_CONTENT
     ).apply { marginEnd = 8 }
 
+    /** 已选标签在筛选条上的写法：「& 猫」，前缀就是这个标签自己的合并方式。 */
+    private fun selectedTagLabel(name: String, mode: TagMode): String =
+        matchModeSymbol(mode) + " " + name
+
+    /**
+     * 筛选条上已选中的标签那颗 chip。
+     *
+     * 点标签本身换合并方式（交 → 并 → 非 → 交，符号跟着变），点尾巴上的 × 把它从筛选里
+     * 去掉 —— 以前这三件事在面板顶上的功能行里，现在挪到标签自己身上（用户 m10282）。
+     */
+    private fun createSelectedTagChip(label: String, tagId: Long, mode: TagMode): Chip =
+        createFilterChip(label) {
+            viewModel.cycleTagMode(tagId)
+            jumpGridToTop()
+        }.apply {
+            isCloseIconVisible = true
+            setOnCloseIconClickListener {
+                viewModel.toggleTagFilter(tagId)
+                jumpGridToTop()
+            }
+            contentDescription = getString(R.string.filter_tag_chip_desc, label, matchModeName(mode))
+        }
+
     // ---------- 标签面板 ----------
 
     /** 展开 / 收起标签面板；按钮上的图标跟着翻个方向。 */
@@ -1541,17 +1612,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 面板内容：所有标签各一颗 chip（网格排列，点一下加入 / 移出筛选），后面跟着
-     * 「同时满足 / 任一满足」开关（选了 2 个以上标签才有意义）与「新建标签 / 管理标签」入口。
+     * 面板内容：所有标签各一颗 chip（网格排列，点一下加入 / 移出筛选），上面一行是
+     * 「新建标签 / 管理标签」入口。
      *
-     * 长按任意一颗标签可以重命名或删除它 —— 标签的管理动作都挂在标签自己身上，
-     * 不用先进某个管理页面再找它。
+     * 交 / 并 / 非 不在这里设了 —— 合并方式是每个标签自己的事，挂在筛选条上那颗标签上点着换
+     * （用户 m10282）。长按任意一颗标签可以重命名或删除它，标签的管理动作都挂在标签自己身上。
      */
-    private fun updateTagPanel(tags: List<TagEntity>, ids: Set<Long>, matchAll: Boolean) {
-        val showMatch = ids.size > 1
-        val key = tags.joinToString(",") { it.name } + "|" + matchAll + "|" + showMatch
+    private fun updateTagPanel(tags: List<TagEntity>, ids: Set<Long>) {
+        val key = tags.joinToString(",") { it.name }
         if (key != tagPanelKey) {
             tagPanelKey = key
+            refreshTagActions()
             tagGrid.removeAllViews()
             if (tags.isEmpty()) {
                 tagGrid.addView(TextView(this).apply {
@@ -1562,27 +1633,33 @@ class MainActivity : AppCompatActivity() {
                 })
             }
             tags.forEach { tag ->
-                tagGrid.addView(createTagGridChip(tag) { viewModel.toggleTagFilter(tag.id) })
+                tagGrid.addView(createTagGridChip(tag) {
+                    viewModel.toggleTagFilter(tag.id)
+                    jumpGridToTop()
+                })
             }
-            if (showMatch) {
-                tagGrid.addView(
-                    createPanelActionChip(matchModeLabel(matchAll)) {
-                        viewModel.setTagMatchAll(!matchAll)
-                    }
-                )
-            }
-            tagGrid.addView(createPanelActionChip(getString(R.string.tag_new_title)) {
-                showTagInputDialog { viewModel.addTag(it) }
-            })
-            tagGrid.addView(createPanelActionChip(getString(R.string.tag_manage_title)) {
-                showTagManager()
-            })
             clampTagPanelHeight()
         }
-        // 标签始终是面板里最前面那几颗，位置对得上
+        // 标签始终是 tagGrid 里最前面那几颗，位置对得上
         tags.forEachIndexed { index, tag ->
             (tagGrid.getChildAt(index) as? Chip)?.isChecked = tag.id in ids
         }
+    }
+
+    /**
+     * 面板顶上那一行：只有「新建标签 / 管理标签」（用户 m10194、m10201）。
+     *
+     * 交 / 并 / 非 三颗原本也在这里，v0.2.005 起挪到筛选条的标签本身上去了（用户 m10282）：
+     * 合并方式是每个标签各自的事，挂在标签上既能一眼看见当前是什么运算，也少点几下。
+     */
+    private fun refreshTagActions() {
+        tagActions.removeAllViews()
+        tagActions.addView(createPanelActionChip(getString(R.string.tag_action_new)) {
+            showTagInputDialog { viewModel.addTag(it) }
+        })
+        tagActions.addView(createPanelActionChip(getString(R.string.tag_action_manage)) {
+            showTagManager()
+        })
     }
 
     /** 面板里的标签 chip：选中态同筛选条，长按弹「重命名 / 删除」。 */
@@ -1594,7 +1671,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    /** 面板里的功能 chip（新建 / 管理 / 同时满足）：它不是筛选条件，所以不参与选中态。 */
+    /** 面板里的功能 chip（新建 / 管理）：它不是筛选条件，所以不参与选中态。 */
     private fun createPanelActionChip(label: String, onClick: () -> Unit): Chip = Chip(this).apply {
         text = label
         textSize = 14f
@@ -1617,10 +1694,12 @@ class MainActivity : AppCompatActivity() {
      * 面板是 wrap_content 的 ScrollView，得等它按内容量过一次才知道要不要封顶。
      */
     private fun clampTagPanelHeight() {
-        tagGrid.post {
+        // 量的是面板里那一整块（功能行 + 标签），不是只有标签网格；tagPanel 声明成 View，取子 View 要先当 ViewGroup
+        val content = (tagPanel as? ViewGroup)?.getChildAt(0) ?: return
+        content.post {
             val max = (resources.displayMetrics.heightPixels * 0.34f).toInt()
             val params = tagPanel.layoutParams
-            val wanted = if (tagGrid.height > max) max else ViewGroup.LayoutParams.WRAP_CONTENT
+            val wanted = if (content.height > max) max else ViewGroup.LayoutParams.WRAP_CONTENT
             if (params.height != wanted) {
                 params.height = wanted
                 tagPanel.layoutParams = params
@@ -1630,8 +1709,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density).toInt()
 
-    private fun matchModeLabel(matchAll: Boolean): String =
-        getString(if (matchAll) R.string.tag_match_all else R.string.tag_match_any)
+    /** 交 / 并 / 非：写在已选标签 chip 前面那个符号，跟搜索框那套语法（& | !）是同一套写法。 */
+    private fun matchModeSymbol(mode: TagMode): String = getString(
+        when (mode) {
+            TagMode.ALL -> R.string.tag_mode_symbol_all
+            TagMode.ANY -> R.string.tag_mode_symbol_any
+            TagMode.EXCLUDE -> R.string.tag_mode_symbol_not
+        }
+    )
+
+    /** 全称，只用作无障碍描述（「交」两个字听不出是同时满足还是任一满足）。 */
+    private fun matchModeName(mode: TagMode): String = getString(
+        when (mode) {
+            TagMode.ALL -> R.string.tag_match_all
+            TagMode.ANY -> R.string.tag_match_any
+            TagMode.EXCLUDE -> R.string.tag_match_exclude
+        }
+    )
 
     private fun setupEmojiGrid() {
         adapter = EmojiGridAdapter(
@@ -1658,6 +1752,84 @@ class MainActivity : AppCompatActivity() {
 
         emojiGrid.layoutManager = GridLayoutManager(this, 3)
         emojiGrid.adapter = adapter
+        emojiGrid.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                updateScrollTop()
+            }
+        })
+    }
+
+    /** 往下滚过一段距离才让「回到置顶」露头；滚回顶上、或者列表被筛短了，它自己收回去。 */
+    private fun updateScrollTop() {
+        if (!::btnScrollTop.isInitialized) return
+        val show = emojiGrid.computeVerticalScrollOffset() >
+            SCROLL_TOP_SHOW_DP * resources.displayMetrics.density
+        btnScrollTop.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    /**
+     * 「回到置顶」按钮：滑上去，速度比系统默认快一截。
+     *
+     * 系统的 LinearSmoothScroller 按 25 毫秒 / 英寸算时长，几千张时能滑好几秒（用户 m10115）。
+     * 这里只把速度换成 [SCROLL_TOP_MS_PER_INCH]，别的行为（先粗滚到附近、再慢慢对准）照旧。
+     */
+    private fun scrollGridToTop(smooth: Boolean = true) {
+        if (!::emojiGrid.isInitialized) return
+        val manager = emojiGrid.layoutManager as? LinearLayoutManager
+        if (!smooth || manager == null) {
+            jumpGridToTop()
+            return
+        }
+        val scroller = object : LinearSmoothScroller(this) {
+            /** 停在第一张的顶上，而不是「能看到就行」。 */
+            override fun getVerticalSnapPreference(): Int = LinearSmoothScroller.SNAP_TO_START
+
+            override fun calculateSpeedPerPixel(displayMetrics: DisplayMetrics): Float =
+                SCROLL_TOP_MS_PER_INCH / displayMetrics.densityDpi
+        }
+        scroller.targetPosition = 0
+        manager.startSmoothScroll(scroller)
+    }
+
+    /** 换了筛选条件、排序或搜索词之后立刻回顶上；顺手核对一下按钮的显隐。 */
+    private fun jumpGridToTop() {
+        if (!::emojiGrid.isInitialized) return
+        emojiGrid.scrollToPosition(0)
+        emojiGrid.post { updateScrollTop() }
+    }
+
+    /**
+     * 排序弹窗：两条单选 —— 按什么排（时间 / 名称 / 大小）、正序还是倒序。
+     * 确定之后立刻换顺序，并回到列表顶上：刚换了顺序还停在旧顺序的第几十张，看着像没生效。
+     */
+    private fun showSortDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_sort, null)
+        val fieldGroup = view.findViewById<RadioGroup>(R.id.sortFieldGroup)
+        val orderGroup = view.findViewById<RadioGroup>(R.id.sortOrderGroup)
+        val current = viewModel.sort.value
+        fieldGroup.check(
+            when (current.field) {
+                UiPrefs.SORT_NAME -> R.id.sortFieldName
+                UiPrefs.SORT_SIZE -> R.id.sortFieldSize
+                else -> R.id.sortFieldTime
+            }
+        )
+        orderGroup.check(if (current.desc) R.id.sortOrderDesc else R.id.sortOrderAsc)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.sort_title)
+            .setView(view)
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.dialog_ok) { _, _ ->
+                val field = when (fieldGroup.checkedRadioButtonId) {
+                    R.id.sortFieldName -> UiPrefs.SORT_NAME
+                    R.id.sortFieldSize -> UiPrefs.SORT_SIZE
+                    else -> UiPrefs.SORT_TIME
+                }
+                viewModel.setSort(field, orderGroup.checkedRadioButtonId == R.id.sortOrderDesc)
+                jumpGridToTop()
+            }
+            .show()
     }
 
     /**
@@ -1833,6 +2005,31 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * 删除选中的那几个表情。删除本身在 ViewModel 里（先删文件、确认文件没了才删记录），
+     * 这里只管把进度框从头管到尾（v0.2.003 起，用户 m09940）。
+     */
+    private fun runDeleteSelected() {
+        val total = viewModel.selectedIds.value.size
+        val progress = BusyDialog.showProgress(
+            this,
+            R.string.delete_progress_title,
+            getString(R.string.delete_progress, 1, total)
+        )
+        lifecycleScope.launch {
+            viewModel.deleteSelectedWithProgress { done, all ->
+                BusyDialog.update(
+                    this@MainActivity,
+                    progress,
+                    done,
+                    all,
+                    getString(R.string.delete_progress, done, all)
+                )
+            }
+            BusyDialog.dismiss(this@MainActivity, progress)
+        }
+    }
+
     private fun setupBottomBar() {
         btnImport.setOnClickListener { showImportSourceDialog() }
 
@@ -1843,7 +2040,7 @@ class MainActivity : AppCompatActivity() {
                     .setTitle(R.string.delete_confirm_title)
                     .setMessage(getString(R.string.delete_confirm_selected_message, count))
                     .setPositiveButton(R.string.action_delete) { _, _ ->
-                        viewModel.deleteSelected()
+                        runDeleteSelected()
                     }
                     .setNegativeButton(R.string.dialog_cancel, null)
                     .show()
@@ -1907,10 +2104,14 @@ class MainActivity : AppCompatActivity() {
                 if (out == null) {
                     ImageExporter.Report(0, targets.size, 0L)
                 } else {
-                    out.use { ImageExporter.zip(it, targets) }
+                    out.use { stream ->
+                        ImageExporter.zip(stream, targets) { done, total ->
+                            showProgress(dialog, R.string.export_progress, done, total)
+                        }
+                    }
                 }
             }
-            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            BusyDialog.dismiss(this@MainActivity, dialog)
             Toast.makeText(this@MainActivity, exportResultText(report, zip = true), Toast.LENGTH_LONG).show()
         }
     }
@@ -1928,7 +2129,7 @@ class MainActivity : AppCompatActivity() {
                     showProgress(dialog, R.string.export_progress, done, total)
                 }
             }
-            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            BusyDialog.dismiss(this@MainActivity, dialog)
             Toast.makeText(this@MainActivity, exportResultText(report, zip = false), Toast.LENGTH_LONG).show()
         }
     }
@@ -1959,6 +2160,8 @@ class MainActivity : AppCompatActivity() {
                 adapter.submitList(emojis)
                 emptyView.visibility = if (emojis.isEmpty()) View.VISIBLE else View.GONE
                 emojiGrid.visibility = if (emojis.isEmpty()) View.GONE else View.VISIBLE
+                // 列表换了内容（比如搜索把结果筛短）之后按钮该收就收；等这一帧摆完再看
+                emojiGrid.post { updateScrollTop() }
             }
         }
 
@@ -2050,7 +2253,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            BusyDialog.dismiss(this@MainActivity, dialog)
             if (report == null) {
                 Toast.makeText(this@MainActivity, getString(R.string.archive_err_generic), Toast.LENGTH_LONG).show()
                 return@launch
@@ -2121,7 +2324,7 @@ class MainActivity : AppCompatActivity() {
                     showProgress(dialog, R.string.archive_import_progress, done, total)
                 }
             }
-            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            BusyDialog.dismiss(this@MainActivity, dialog)
             val text = when {
                 report.error != null -> errorText(report.error)
                 else -> buildString {
@@ -2145,21 +2348,17 @@ class MainActivity : AppCompatActivity() {
         EmojiArchive.Error.IO -> getString(R.string.archive_err_generic)
     }
 
-    /** 迁移期间不让点掉：进度框一关就不知道还在不在写。 */
-    private fun busyDialog(titleRes: Int, formatRes: Int): AlertDialog {
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(titleRes)
-            .setMessage(getString(formatRes, 0, 0))
-            .setCancelable(false)
-            .create()
-        dialog.show()
-        return dialog
-    }
+    /**
+     * 干重活时的进度框（v0.2.003 起带进度条，用户 m09940）：标题 + 一根条 + 「第 N / M 张」。
+     *
+     * 开头传 0 是因为总数往往还没数出来：进度条先转圈，第一张处理完就有分母了。
+     * 迁移期间不让点掉 —— 进度框一关就不知道还在不在写。
+     */
+    private fun busyDialog(titleRes: Int, formatRes: Int): BusyDialog.Progress =
+        BusyDialog.showProgress(this, titleRes, getString(formatRes, 0, 0))
 
-    private fun showProgress(dialog: AlertDialog, formatRes: Int, done: Int, total: Int) {
-        runOnUiThread {
-            if (dialog.isShowing && !isFinishing) dialog.setMessage(getString(formatRes, done, total))
-        }
+    private fun showProgress(progress: BusyDialog.Progress, formatRes: Int, done: Int, total: Int) {
+        BusyDialog.update(this, progress, done, total, getString(formatRes, done, total))
     }
 
     /** 一张图的导入结果：拿到真名 / 没拿到（用导入时间兜底）/ 失败。 */
@@ -2169,13 +2368,13 @@ class MainActivity : AppCompatActivity() {
         if (uris.isEmpty()) return
         lifecycleScope.launch {
             // 单张不弹进度框：一闪而过反而像卡了。
-            var progress: AlertDialog? = null
+            var progress: BusyDialog.Progress? = null
             if (uris.size > 1) {
-                progress = MaterialAlertDialogBuilder(this@MainActivity)
-                    .setTitle(R.string.import_progress_title)
-                    .setMessage(getString(R.string.import_progress_format, 1, uris.size))
-                    .setCancelable(false)
-                    .show()
+                progress = BusyDialog.showProgress(
+                    this@MainActivity,
+                    R.string.import_progress_title,
+                    getString(R.string.import_progress_format, 1, uris.size)
+                )
             }
 
             var ok = 0
@@ -2183,9 +2382,15 @@ class MainActivity : AppCompatActivity() {
             var noName = 0
             try {
                 uris.forEachIndexed { index, uri ->
-                    progress?.setMessage(
-                        getString(R.string.import_progress_format, index + 1, uris.size)
-                    )
+                    progress?.let { bar ->
+                        BusyDialog.update(
+                            this@MainActivity,
+                            bar,
+                            index + 1,
+                            uris.size,
+                            getString(R.string.import_progress_format, index + 1, uris.size)
+                        )
+                    }
                     // 落库要整份拷贝文件、还要解码图片读宽高，全是阻塞 IO：
                     // 放在主线程上，导入一张大图就会卡住界面甚至 ANR（emc-1-018）。
                     when (withContext(Dispatchers.IO) { copyUriToLibrary(uri) }) {
@@ -2199,7 +2404,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 // 页面销毁会取消 lifecycleScope，进度框必须在这里收掉，否则窗口跟着泄漏。
-                progress?.dismiss()
+                progress?.let { BusyDialog.dismiss(this@MainActivity, it) }
             }
             showImportResult(ok, failed, noName)
             // 一张都没进来就别动用户的原文件（见「导入后的原文件怎么办」这条策略）。
@@ -2225,11 +2430,11 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, R.string.source_zip_need_dir, Toast.LENGTH_LONG).show()
                     return
                 }
-                val dialog = MaterialAlertDialogBuilder(this)
-                    .setTitle(R.string.source_zip_title)
-                    .setMessage(getString(R.string.import_progress_format, 1, sources.size))
-                    .setCancelable(false)
-                    .show()
+                val dialog = BusyDialog.showProgress(
+                    this,
+                    R.string.source_zip_title,
+                    getString(R.string.source_zip_progress, 1, sources.size)
+                )
                 val zipName = SourceFiles.zipName()
                 lifecycleScope.launch {
                     val zipped = withContext(Dispatchers.IO) {
@@ -2239,10 +2444,18 @@ class MainActivity : AppCompatActivity() {
                                 Uri.parse(tree),
                                 sources,
                                 zipName
-                            )
+                            ) { done, total ->
+                                BusyDialog.update(
+                                    this@MainActivity,
+                                    dialog,
+                                    done,
+                                    total,
+                                    getString(R.string.source_zip_progress, done, total)
+                                )
+                            }
                         }.getOrNull()
                     }
-                    dialog.dismiss()
+                    BusyDialog.dismiss(this@MainActivity, dialog)
                     if (zipped.isNullOrEmpty()) {
                         // 包没写成，源文件一个都不删（zipSources 自己也会把半成品删掉）。
                         Toast.makeText(this@MainActivity, R.string.source_zip_failed, Toast.LENGTH_LONG)
@@ -2277,13 +2490,28 @@ class MainActivity : AppCompatActivity() {
      */
     private fun startSourceDelete(uris: List<Uri>) {
         lifecycleScope.launch {
+            // 删的是用户自己的原文件，一次能挑几百个 —— 也得让进度条动起来（用户 m09940）
+            val dialog = BusyDialog.showProgress(
+                this@MainActivity,
+                R.string.delete_progress_title,
+                getString(R.string.source_delete_progress, 1, uris.size)
+            )
             val (docCount, docDeleted, media) = withContext(Dispatchers.IO) {
                 val mediaUris = SourceFiles.mediaUrisForDelete(this@MainActivity, uris)
                 val docUris = uris.filterNot { it in mediaUris }
                 val deleted = if (docUris.isEmpty()) 0 else
-                    SourceFiles.deleteDocuments(this@MainActivity, docUris)
+                    SourceFiles.deleteDocuments(this@MainActivity, docUris) { done, total ->
+                        BusyDialog.update(
+                            this@MainActivity,
+                            dialog,
+                            done,
+                            total,
+                            getString(R.string.source_delete_progress, done, total)
+                        )
+                    }
                 Triple(docUris.size, deleted, mediaUris)
             }
+            BusyDialog.dismiss(this@MainActivity, dialog)
             pendingDocDeleted = docDeleted
             pendingSkipped = docCount - docDeleted
             pendingMediaCount = 0
@@ -2328,21 +2556,44 @@ class MainActivity : AppCompatActivity() {
      */
     private fun importFolder(treeUri: Uri) {
         lifecycleScope.launch {
-            val progress = MaterialAlertDialogBuilder(this@MainActivity)
-                .setTitle(R.string.import_folder_progress_title)
-                .setMessage(R.string.import_folder_progress_message)
-                .setCancelable(false)
-                .show()
-            val count = try {
-                viewModel.importFolder(treeUri)
+            // 两段进度（用户 m09930）：先扫描，这时还没有分母，进度条转圈、只报「已找到 N 张」；
+            // 扫完拿到总数，再按「已导入 / 总数」走百分比。
+            val progress = BusyDialog.showProgress(
+                this@MainActivity,
+                R.string.import_folder_progress_title,
+                getString(R.string.import_folder_scanning, 0),
+                getString(R.string.import_folder_progress_message)
+            )
+            val result = try {
+                viewModel.importFolder(
+                    treeUri,
+                    onScanning = { found ->
+                        BusyDialog.update(
+                            this@MainActivity,
+                            progress,
+                            0,
+                            0,
+                            getString(R.string.import_folder_scanning, found)
+                        )
+                    },
+                    onProgress = { done, total ->
+                        BusyDialog.update(
+                            this@MainActivity,
+                            progress,
+                            done,
+                            total,
+                            getString(R.string.import_progress_format, done, total)
+                        )
+                    }
+                )
             } finally {
-                progress.dismiss()
+                BusyDialog.dismiss(this@MainActivity, progress)
             }
             val text = when {
-                count < 0 -> getString(R.string.import_folder_unreadable)
-                count == 0 -> getString(R.string.import_folder_empty)
-                else -> getString(R.string.import_folder_result, count)
-            }
+                result.count < 0 -> getString(R.string.import_folder_unreadable)
+                result.count == 0 -> getString(R.string.import_folder_empty)
+                else -> getString(R.string.import_folder_result, result.count)
+            } + if (result.truncated) getString(R.string.import_folder_truncated) else ""
             Snackbar.make(findViewById(R.id.rootLayout), text, Snackbar.LENGTH_LONG).show()
         }
     }
@@ -2411,6 +2662,14 @@ class MainActivity : AppCompatActivity() {
             FloatingBallService.start(this)
             justStarted = true
             Toast.makeText(this, R.string.overlay_started, Toast.LENGTH_LONG).show()
+        }
+        // 上次把它开着，这次进应用就自己挂回来（用户 m09897）。没权限就当没这回事，
+        // 不弹提示 —— 开关会如实停在「关」，用户点它的时候再走权限引导。
+        if (!justStarted && SenderPrefs.ballOn(this) &&
+            Settings.canDrawOverlays(this) && !FloatingBallService.isRunning
+        ) {
+            FloatingBallService.start(this)
+            justStarted = true
         }
         if (justStarted) {
             // start() 只是把服务拉起来，这一刻它还跑到 onStartCommand 呢，

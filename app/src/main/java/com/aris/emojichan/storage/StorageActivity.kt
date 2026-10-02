@@ -176,12 +176,20 @@ class StorageActivity : AppCompatActivity() {
 
     private fun runClearCache() {
         lifecycleScope.launch {
-            val dialog = BusyDialog.show(
+            val dialog = BusyDialog.showProgress(
                 this@StorageActivity,
                 R.string.storage_clear_cache_title,
                 getString(R.string.storage_clear_cache_working)
             )
-            val freed = CacheCleaner.clear(this@StorageActivity)
+            val freed = CacheCleaner.clear(this@StorageActivity) { done, total ->
+                BusyDialog.update(
+                    this@StorageActivity,
+                    dialog,
+                    done,
+                    total,
+                    getString(R.string.storage_clear_cache_progress, done, total)
+                )
+            }
             BusyDialog.dismiss(this@StorageActivity, dialog)
 
             val text = if (freed > 0L) {

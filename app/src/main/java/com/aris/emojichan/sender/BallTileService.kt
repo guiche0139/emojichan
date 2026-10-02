@@ -33,6 +33,8 @@ class BallTileService : TileService() {
         super.onClick()
         if (FloatingBallService.isRunning) {
             SendLog.d("磁贴", "点了一下：收起悬浮球")
+            // 记下「用户就是要它关着」，否则回主界面时会被自动挂回来（用户 m09897）
+            SenderPrefs.setBallOn(this, false)
             FloatingBallService.stop(this)
         } else {
             SendLog.d("磁贴", "点了一下：开启悬浮球")
@@ -49,6 +51,7 @@ class BallTileService : TileService() {
         }
         try {
             startService(Intent(this, FloatingBallService::class.java))
+            SenderPrefs.setBallOn(this, true)
             SendLog.d("磁贴", "已让悬浮球服务启动")
         } catch (e: Exception) {
             // 后台起服务被拒（各 ROM 判断不一）：退回主界面，那里是前台，起服务一定合法。

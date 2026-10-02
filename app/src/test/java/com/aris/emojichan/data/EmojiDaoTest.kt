@@ -168,8 +168,8 @@ class EmojiDaoTest {
         dao.insert(emoji("fish"))
 
         // bird 只有 source 含 cat，不该被搜出来
-        assertEquals(2, find(EmojiFilter(keyword = "cat")).size)
-        assertEquals(1, find(EmojiFilter(keyword = "fish")).size)
+        assertEquals(2, find(EmojiFilter(expr = EmojiFilter.parse("cat"))).size)
+        assertEquals(1, find(EmojiFilter(expr = EmojiFilter.parse("fish"))).size)
     }
 
     @Test
@@ -181,8 +181,8 @@ class EmojiDaoTest {
 
         // 三条记录的 source 都是默认的 "local"（含 a/l/o/c）。
         // 若 source 参与 LIKE，这两个查询会把三条全部命中。
-        assertEquals(0, find(EmojiFilter(keyword = "a")).size)
-        assertEquals(0, find(EmojiFilter(keyword = "local")).size)
+        assertEquals(0, find(EmojiFilter(expr = EmojiFilter.parse("a"))).size)
+        assertEquals(0, find(EmojiFilter(expr = EmojiFilter.parse("local"))).size)
     }
 
     /** 收藏与关键词可以叠加（分类没了，筛选只剩这两个维度加标签）。 */
@@ -195,10 +195,10 @@ class EmojiDaoTest {
 
         assertEquals(2, dao.getFavorites().first().size)
         assertEquals(3, dao.getCount().first())
-        assertEquals(1, find(EmojiFilter(keyword = "red")).size)
-        assertEquals(1, find(EmojiFilter(favoritesOnly = true, keyword = "green")).size)
+        assertEquals(1, find(EmojiFilter(expr = EmojiFilter.parse("red"))).size)
+        assertEquals(1, find(EmojiFilter(favoritesOnly = true, expr = EmojiFilter.parse("green"))).size)
         // 收藏 + 关键词互斥的组合要真的查空，而不是退化成只看收藏
-        assertEquals(0, find(EmojiFilter(favoritesOnly = true, keyword = "blue")).size)
+        assertEquals(0, find(EmojiFilter(favoritesOnly = true, expr = EmojiFilter.parse("blue"))).size)
     }
 
     @Test
@@ -251,22 +251,19 @@ class EmojiDaoTest {
         dao.importEmoji(emoji("dog"), "cat-tag")
         dao.insert(emoji("fish"))
 
-        assertEquals(1, find(EmojiFilter(keyword = "cat-tag")).size)
+        assertEquals(1, find(EmojiFilter(expr = EmojiFilter.parse("cat-tag"))).size)
     }
 
-    /** $TAG: 是「按标签找」，此时再叠标签 chip 同样只会撞出空结果。 */
+    /** $TAG: 是「按标签找」，此时再叠标签 chip 只会撞出空结果。 */
     @Test
     fun tagPrefixIgnoresTagChips() = runTest {
         val a = dao.importEmoji(emoji("a"), "猫")
         val b = dao.importEmoji(emoji("b"), "猫")
         dao.importEmoji(emoji("c"), "狗")
 
-        val (mode, keyword) = EmojiFilter.parseQuery("\$TAG:猫")
-        assertEquals(SearchMode.TAG, mode)
         val ids = find(
             EmojiFilter(
-                keyword = keyword,
-                searchMode = mode,
+                expr = EmojiFilter.parse("\$TAG:猫"),
                 tagIds = listOf(dao.ensureTag("狗")!!),
                 tagMatchAll = true
             )
@@ -274,14 +271,70 @@ class EmojiDaoTest {
         assertEquals(setOf(a, b), ids)
     }
 
+    /** 标签条件两种写法等价：$标签名$ 与 $TAG=标签名$（头部大小写不敏感）。 */
     @Test
-    fun parseQueryCases() = runTest {
-        assertEquals(SearchMode.TAG to "猫", EmojiFilter.parseQuery("\$tag: 猫 "))
-        // 前缀后面还没输关键词时退回普通搜索，否则列表会突然空掉
-        assertEquals(SearchMode.NAME to "", EmojiFilter.parseQuery("\$TAG:"))
-        assertEquals(SearchMode.NAME to "猫猫", EmojiFilter.parseQuery("猫猫"))
-        // 前缀大小写不敏感
-        assertEquals(SearchMode.TAG to "猫", EmojiFilter.parseQuery("\$Tag:猫"))
+    fun tagTermAcceptsBothWritings() = runTest {
+        val a = dao.importEmoji(emoji("a"), "猫")
+        dao.importEmoji(emoji("b"), "狗")
+
+        for (query in listOf("\$猫\$", "\$TAG=猫\$", "\$tag: 猫 \$")) {
+            assertEquals(
+                query,
+                setOf(a),
+                find(EmojiFilter(expr = EmojiFilter.parse(query))).map { it.id }.toSet()
+            )
+        }
+    }
+
+    /** & 是同时满足、/ 是任一满足，先算 & 再算 /。 */
+    @Test
+    fun expressionCombinesAndOr() = runTest {
+        val catAngry = dao.importEmoji(emoji("cat-angry"), null)
+        val catHappy = dao.importEmoji(emoji("cat-happy"), null)
+        val dogAngry = dao.importEmoji(emoji("dog-angry"), null)
+        dao.importEmoji(emoji("bird"), null)
+        val cat = dao.ensureTag("猫")!!
+        val dog = dao.ensureTag("狗")!!
+        dao.addTagsTo(listOf(catAngry, catHappy), listOf(cat))
+        dao.addTagsTo(listOf(dogAngry), listOf(dog))
+
+        // ($TAG=猫$ & @angry@) / $TAG=狗$
+        val hit = find(EmojiFilter(expr = EmojiFilter.parse("\$TAG=猫\$ & @angry@ / \$TAG=狗\$")))
+        assertEquals(setOf(catAngry, dogAngry), hit.map { it.id }.toSet())
+    }
+
+    @Test
+    fun parseCases() = runTest {
+        // 空搜索：没有条件，列表不做文字过滤
+        assertNull(EmojiFilter.parse(""))
+        assertNull(EmojiFilter.parse("   "))
+
+        assertEquals(listOf(listOf(SearchTerm.Keyword("a"))), EmojiFilter.parse("a")?.groups)
+
+        // & 绑得更紧：先按 & 分组，组与组之间才是「任一满足」
+        assertEquals(
+            listOf(
+                listOf(SearchTerm.Keyword("a")),
+                listOf(SearchTerm.Keyword("b"), SearchTerm.Keyword("c"))
+            ),
+            EmojiFilter.parse("a/b&c")?.groups
+        )
+
+        // $…$ 里 TAG= / TAG: 两种头部都认，大小写不敏感，两头空白忽略
+        for (query in listOf("\$TAG: 猫 \$", "\$TAG=猫\$", "\$Tag=猫\$")) {
+            assertEquals(query, listOf(listOf(SearchTerm.Tag("猫"))), EmojiFilter.parse(query)?.groups)
+        }
+
+        // @…@ 只看表情名
+        assertEquals(listOf(listOf(SearchTerm.Name("猫猫"))), EmojiFilter.parse("@猫猫@")?.groups)
+
+        // 只写了半截符号：这一项丢掉，但后面的条件照算，免得列表突然清空
+        assertEquals(listOf(listOf(SearchTerm.Keyword("a"))), EmojiFilter.parse("a & \$TAG:\$")?.groups)
+        assertNull(EmojiFilter.parse("\$TAG:\$"))
+
+        // 没写右括号也照算：$ 遇到 & 截断，@ 一直吃到结尾
+        assertEquals(listOf(listOf(SearchTerm.Tag("猫"))), EmojiFilter.parse("\$TAG:猫")?.groups)
+        assertEquals(listOf(listOf(SearchTerm.Name("猫猫"))), EmojiFilter.parse("@猫猫")?.groups)
     }
 
     /** LIKE 的通配符必须转义，否则搜「%」会把全部表情捞出来。 */
@@ -290,10 +343,10 @@ class EmojiDaoTest {
         dao.insert(emoji("cat"))
         dao.insert(emoji("dog"))
 
-        assertEquals(0, find(EmojiFilter(keyword = "%")).size)
-        assertEquals(0, find(EmojiFilter(keyword = "_")).size)
+        assertEquals(0, find(EmojiFilter(expr = EmojiFilter.parse("%"))).size)
+        assertEquals(0, find(EmojiFilter(expr = EmojiFilter.parse("_"))).size)
         // 下划线被转义成字面量，所以 "c_t" 只匹配名字里真的有下划线的记录（这里没有）
-        assertEquals(0, find(EmojiFilter(keyword = "c_t")).size)
+        assertEquals(0, find(EmojiFilter(expr = EmojiFilter.parse("c_t"))).size)
     }
 
     @Test
@@ -387,5 +440,56 @@ class EmojiDaoTest {
 
         assertEquals(listOf("表情", "表情(1)"), dao.getAllTagNames().sorted())
         assertEquals("表情(2)", EmojiNaming.unique("表情", dao.getAllTagNames()))
+    }
+
+    // ---------- 内容指纹（重复检索） ----------
+
+    private fun feature(
+        emojiId: Long,
+        sha256: String,
+        bytes: Long = 1000L,
+        modifiedAt: Long = 1L
+    ) = ImageFeatureEntity(
+        emojiId = emojiId,
+        bytes = bytes,
+        modifiedAt = modifiedAt,
+        sha256 = sha256
+    )
+
+    /** 同一张图重算过就覆盖旧值，不能攒出第二行 —— emojiId 是主键，靠 REPLACE 保证。 */
+    @Test
+    fun featuresAreUpsertedNotDuplicated() = runTest {
+        val id = dao.insert(emoji("a"))
+
+        dao.upsertFeatures(listOf(feature(id, "aaa")))
+        dao.upsertFeatures(listOf(feature(id, "bbb", modifiedAt = 2L)))
+
+        val stored = dao.getAllFeatures()
+        assertEquals(1, stored.size)
+        assertEquals("bbb", stored.single().sha256)
+        assertEquals(2L, stored.single().modifiedAt)
+    }
+
+    /** 表情记录被删掉，指纹必须跟着消失（外键 CASCADE）—— 留下来就是指向不存在表情的孤儿行。 */
+    @Test
+    fun deletingEmojiCascadesToItsFeature() = runTest {
+        val a = dao.insert(emoji("a"))
+        val b = dao.insert(emoji("b"))
+        dao.upsertFeatures(listOf(feature(a, "aaa"), feature(b, "bbb")))
+
+        dao.deleteEmojisByIds(listOf(a))
+
+        assertEquals(listOf(b), dao.getAllFeatures().map { it.emojiId })
+    }
+
+    /** 换库导入（REPLACE）走 clearLibrary()，指纹不能残留上一个库的。 */
+    @Test
+    fun clearLibraryDropsFeaturesToo() = runTest {
+        val id = dao.insert(emoji("a"))
+        dao.upsertFeatures(listOf(feature(id, "aaa")))
+
+        dao.clearLibrary()
+
+        assertTrue(dao.getAllFeatures().isEmpty())
     }
 }

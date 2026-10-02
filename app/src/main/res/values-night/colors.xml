@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      深色模式下的同一批颜色名。语义色全部压暗、文字提亮；主题色反过来：
-      浅色模式用的是压深版，深色模式直接用图标里的原色（#99DFFF / #FF99DF），
-      这时它们是「浅底深字」—— on_primary 换成同色相的深墨色，对比度 8.8~10.4:1，
-      容器色也换成深底 + 浅字。
+      深色模式下的同一批颜色名。语义色全部压暗、文字提亮；主题色用的是图标里的
+      那两个原色（#99DFFF / #FF99DF），压在暗底上 9.7~12.8:1，配深墨字也够 ——
+      所以深色模式下线条色不用再压深，stroke 直接等于原色。
     -->
     <color name="background">#111218</color>
     <color name="surface">#1A1C24</color>
@@ -12,6 +11,7 @@
     <color name="text_primary">#ECEDF3</color>
     <color name="text_secondary">#A0A4B8</color>
     <color name="divider">#32343F</color>
+    <color name="scrim_soft">#99000000</color>
 
     <color name="accent">#FFD166</color>
     <color name="warning_container">#3A2E15</color>
@@ -31,6 +31,7 @@
     <color name="palette_blue_on_secondary">#3A0722</color>
     <color name="palette_blue_secondary_container">#4A1B36</color>
     <color name="palette_blue_on_secondary_container">#FFD9EE</color>
+    <color name="palette_blue_stroke">#99DFFF</color>
 
     <color name="palette_pink_primary">#FF99DF</color>
     <color name="palette_pink_on_primary">#3A0722</color>
@@ -40,4 +41,14 @@
     <color name="palette_pink_on_secondary">#06283C</color>
     <color name="palette_pink_secondary_container">#123C52</color>
     <color name="palette_pink_on_secondary_container">#C7EBFF</color>
+    <color name="palette_pink_stroke">#FF99DF</color>
+
+    <!-- ==================== 存储概览饼图（深色） ==================== -->
+    <color name="pie_1">#6FB4F0</color>
+    <color name="pie_2">#F08CC0</color>
+    <color name="pie_3">#F0BC6A</color>
+    <color name="pie_4">#5FCBA6</color>
+    <color name="pie_5">#A99BE8</color>
+    <color name="pie_6">#A7AFC0</color>
+    <color name="pie_other">#4A4E5C</color>
 </resources>

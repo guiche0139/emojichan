@@ -311,7 +311,7 @@ class AutoSendService : AccessibilityService() {
          * 用户报「点了没反应」时日志里什么也看不到（emc-1-038）—— 所以至少记一行。
          */
         private fun logFailure(what: String, e: Throwable) {
-            SendLog.d("自动发送", what + "出错：" + (e.message?.take(80) ?: e.javaClass.simpleName))
+            SendLog.e("自动发送", what + "出错：" + (e.message?.take(80) ?: e.javaClass.simpleName))
         }
 
         /**
@@ -437,7 +437,7 @@ class AutoSendService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         handler.removeCallbacks(foregroundRecheck)
-        SendLog.d("服务", "无障碍服务被系统断开（应用更新或手动关闭后会这样）")
+        SendLog.e("服务", "无障碍服务被系统断开（应用更新或手动关闭后会这样）")
         instance = null
         isConnected = false
         updateForeground(null)
@@ -563,7 +563,7 @@ class AutoSendService : AccessibilityService() {
     private fun doReadChatTitle(): String? {
         val roots = applicationRoots()
         if (roots.isEmpty()) {
-            SendLog.d("读标题", "拿不到当前应用窗口的根节点")
+            SendLog.w("读标题", "拿不到当前应用窗口的根节点")
             return null
         }
         val nodes = ArrayList<AccessibilityNodeInfo>()
@@ -614,7 +614,7 @@ class AutoSendService : AccessibilityService() {
 
         // 兜底：微信的换页事件常常直接带着聊天对象名。只在名字像样时才敢用。
         val fallback = lastWindowText?.takeIf { looksLikeName(it) }
-        if (fallback != null) SendLog.d("读标题", "改用窗口事件文本兜底：" + fallback)
+        if (fallback != null) SendLog.w("读标题", "改用窗口事件文本兜底：" + fallback)
         return fallback
     }
 
@@ -631,7 +631,7 @@ class AutoSendService : AccessibilityService() {
         val nodes = ArrayList<AccessibilityNodeInfo>()
         applicationRoots().forEach { collect(it, nodes, 0) }
         if (!hasInputBelow(nodes, inputMinTop)) {
-            SendLog.d("读标题", "补读放弃：下半屏没找到输入框，不在聊天页")
+            SendLog.w("读标题", "补读放弃：下半屏没找到输入框，不在聊天页")
             return null
         }
         val infoButton = nodes.firstOrNull { node ->
@@ -641,7 +641,7 @@ class AutoSendService : AccessibilityService() {
             r.width() > 0 && r.height() > 0 && r.centerX() > screenWidth * TITLE_MAX_CENTER_RATIO
         }
         if (infoButton == null) {
-            SendLog.d("读标题", "补读放弃：没找到右上角的「更多信息」按钮")
+            SendLog.w("读标题", "补读放弃：没找到右上角的「更多信息」按钮")
             return null
         }
         SendLog.d("读标题", "补读：点开「" + infoButton.contentDescription + "」进聊天信息页")
@@ -686,12 +686,12 @@ class AutoSendService : AccessibilityService() {
         val inputMinTop = (screenHeight * INPUT_TOP_RATIO).toInt()
         val before = collectAll()
         if (!hasInputBelow(before, inputMinTop)) {
-            SendLog.d("粘贴", "放弃：下半屏没找到输入框，不在聊天页")
+            SendLog.w("粘贴", "放弃：下半屏没找到输入框，不在聊天页")
             return PasteOutcome.FAILED
         }
         val input = before.lastOrNull { isEditableNode(it) }
         if (input == null) {
-            SendLog.d("粘贴", "放弃：没找到输入框节点")
+            SendLog.w("粘贴", "放弃：没找到输入框节点")
             return PasteOutcome.FAILED
         }
         val box = boundsOf(input)
@@ -800,7 +800,7 @@ class AutoSendService : AccessibilityService() {
         if (pasteNode == null) {
             // 一条候选文本都读不到 = 菜单压根没弹出来；读到别的项才叫「有菜单但没有粘贴」。
             val outcome = if (entries.isEmpty()) MenuOutcome.NOT_SHOWN else MenuOutcome.NO_PASTE
-            SendLog.d("粘贴", "菜单里没有「粘贴」（" + outcome + "）")
+            SendLog.w("粘贴", "菜单里没有「粘贴」（" + outcome + "）")
             return outcome
         }
         val ok = click(pasteNode)
@@ -877,7 +877,7 @@ class AutoSendService : AccessibilityService() {
                         return PasteOutcome.ALREADY_SENT
                     }
                 }
-                SendLog.d("粘贴", "预览小窗上没找到「发送」，现场：" + dumpRows(nodes, foregroundPackage, 0))
+                SendLog.e("粘贴", "预览小窗上没找到「发送」，现场：" + dumpRows(nodes, foregroundPackage, 0))
                 return PasteOutcome.FAILED
             }
             return clickFinalSend(send, "预览小窗", inputMinTop)
@@ -1008,7 +1008,7 @@ class AutoSendService : AccessibilityService() {
         val page = collectAll()
         val box = inputBoxNode(page, inputTop)
         if (box == null) {
-            SendLog.d("相册", "放弃：下半屏没找到输入框，不在聊天页")
+            SendLog.w("相册", "放弃：下半屏没找到输入框，不在聊天页")
             return AlbumOutcome.FAILED
         }
         val inputBox = boundsOf(box)
@@ -1035,7 +1035,7 @@ class AutoSendService : AccessibilityService() {
                 "点「+」@" + boundsOf(plus).flattenToString() + "（输入框 " + inputBox.flattenToString() + "）"
             )
             if (!click(plus)) {
-                SendLog.d("相册", "点「+」没成功")
+                SendLog.w("相册", "点「+」没成功")
                 return AlbumOutcome.FAILED
             }
             delay(ALBUM_PANEL_DELAY_MS)
@@ -1056,7 +1056,7 @@ class AutoSendService : AccessibilityService() {
         val entryLabel = titleTextOf(entry)?.trim().orEmpty()
         SendLog.d("相册", "点面板入口「" + entryLabel + "」@" + boundsOf(entry).flattenToString())
         if (!click(entry)) {
-            SendLog.d("相册", "点面板入口「" + entryLabel + "」没成功")
+            SendLog.w("相册", "点面板入口「" + entryLabel + "」没成功")
             exitAlbumPage()
             return AlbumOutcome.FAILED
         }
@@ -1107,7 +1107,7 @@ class AutoSendService : AccessibilityService() {
         }
         SendLog.d("相册", "点第一格图@" + boundsOf(cell).flattenToString())
         if (!click(cell)) {
-            SendLog.d("相册", "点第一格图没成功")
+            SendLog.w("相册", "点第一格图没成功")
             exitAlbumPage()
             return AlbumOutcome.FAILED
         }
@@ -1288,11 +1288,11 @@ class AutoSendService : AccessibilityService() {
                 inInputBarRow(r, inputBox)
         }
         rightSide.maxByOrNull { boundsOf(it).right }?.let {
-            SendLog.d("相册", "「+」没有可认的文本，取输入框右边最靠右的图标@" + boundsOf(it).flattenToString())
+            SendLog.w("相册", "「+」没有可认的文本，取输入框右边最靠右的图标@" + boundsOf(it).flattenToString())
             return it
         }
         // ③ 再兜一层：整排里最靠右能点的。
-        SendLog.d("相册", "「+」没有可认的文本，取输入栏最靠右那个能点的图标")
+        SendLog.w("相册", "「+」没有可认的文本，取输入栏最靠右那个能点的图标")
         return bar.filter { it.isClickable && inInputBarRow(boundsOf(it), inputBox) }
             .maxByOrNull { boundsOf(it).right }
     }
@@ -1626,7 +1626,7 @@ class AutoSendService : AccessibilityService() {
             round++
             val roots = applicationRoots()
             if (roots.isEmpty()) {
-                if (round == 1) SendLog.d("点会话", "第 1 轮：拿不到根节点")
+                if (round == 1) SendLog.w("点会话", "第 1 轮：拿不到根节点")
             } else {
                 val nodes = ArrayList<AccessibilityNodeInfo>()
                 roots.forEach { collect(it, nodes, 0) }
@@ -1700,7 +1700,7 @@ class AutoSendService : AccessibilityService() {
             }
             delay(POLL_INTERVAL_MS)
         }
-        SendLog.d("点会话", "超时未点到：" + target)
+        SendLog.e("点会话", "超时未点到：" + target)
         return ChatClick.NO_TARGET
     }
 
@@ -1718,7 +1718,7 @@ class AutoSendService : AccessibilityService() {
         val minTop = (resources.displayMetrics.heightPixels * ROW_MIN_TOP_RATIO).toInt()
         val sendNode = confirmDialogSendNode(nodes, minTop)
         if (sendNode == null) {
-            SendLog.d("点会话", "复查：界面上没有「发送给」确认框，不再动手")
+            SendLog.w("点会话", "复查：界面上没有「发送给」确认框，不再动手")
             return false
         }
         if (!SenderPrefs.autoConfirmLastStep(this)) {
@@ -1797,7 +1797,7 @@ class AutoSendService : AccessibilityService() {
         delay(CLICK_VERIFY_DELAY_MS)
         val roots = applicationRoots()
         if (roots.isEmpty()) {
-            SendLog.d("点会话", "点击后复查：拿不到根节点，无法确认，按已点开处理")
+            SendLog.w("点会话", "点击后复查：拿不到根节点，无法确认，按已点开处理")
             return true
         }
         val nodes = ArrayList<AccessibilityNodeInfo>()

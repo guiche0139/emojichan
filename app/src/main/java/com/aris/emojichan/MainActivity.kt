@@ -16,6 +16,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.text.format.Formatter
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -25,9 +26,12 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.PopupWindow
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -37,15 +41,20 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.data.EmojiDefaults
 import com.aris.emojichan.data.EmojiEntity
-import com.aris.emojichan.data.SearchMode
+import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.TagEntity
 import com.aris.emojichan.sender.AutoSendService
 import com.aris.emojichan.sender.BallScope
 import com.aris.emojichan.sender.BallTileService
 import com.aris.emojichan.sender.FloatingBallService
 import com.aris.emojichan.sender.SendLog
+import com.aris.emojichan.storage.ExportTarget
+import com.aris.emojichan.storage.ImageExporter
+import com.aris.emojichan.storage.StorageActivity
+import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.EmojiImport
 import com.aris.emojichan.util.ImageUtil
+import com.aris.emojichan.util.SourceFiles
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.bottomnavigation.BottomNavigationView
@@ -59,6 +68,9 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.slider.Slider
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -66,11 +78,30 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.aris.emojichan.sender.SendLogActivity
 import com.aris.emojichan.sender.SenderPrefs
 
 /** 搜索防抖窗口：停止输入多久之后才真正查询数据库。 */
 private const val SEARCH_DEBOUNCE_MS = 250L
+
+/** 搜索补全一次最多给几条候选：再多列表里就光剩滚了。 */
+private const val MAX_SEARCH_SUGGESTIONS = 8
+
+/** 候选列表最多占多高（dp）：超出的部分在列表里滚，不整页往下顶。 */
+private const val MAX_SUGGESTION_HEIGHT_DP = 240
+
+/** 候选列表跟搜索框之间留的空隙（dp）。 */
+private const val SUGGESTION_GAP_DP = 4
+
+/** 筛选条一次刷新要用到的几项条件。 */
+private data class FilterState(
+    val tags: List<TagEntity>,
+    val ids: Set<Long>,
+    val matchAll: Boolean,
+    val favoritesOnly: Boolean
+)
+
+/** 搜索补全的一条候选：[label] 是列表里显示的，[insert] 是点下去真正写进搜索框的。 */
+private data class SearchSuggestion(val label: String, val insert: String)
 
 /** 悬浮球服务从 start() 到真的把球挂上，中间隔着一次 onCreate；这段时间 isRunning 还是 false。 */
 private const val OVERLAY_SWITCH_SETTLE_MS = 600L
@@ -110,8 +141,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSelectAll: Button
     private lateinit var btnCancel: Button
     private lateinit var btnOrganize: Button
+    private lateinit var btnExport: Button
     private lateinit var senderStatus: TextView
-    private lateinit var senderBanner: TextView
+    private lateinit var a11yIndicator: View
+    private lateinit var a11yDot: View
     private lateinit var emojiPage: View
     private lateinit var settingsPage: View
     private lateinit var bottomNav: BottomNavigationView
@@ -120,11 +153,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var confirmHint: TextView
     private lateinit var ballAppsValue: TextView
     private lateinit var tileState: TextView
-    private lateinit var routeToggle: MaterialButtonToggleGroup
-    private lateinit var routeHint: TextView
-    private lateinit var wechatImageToggle: MaterialButtonToggleGroup
-    private lateinit var wechatImageHint: TextView
     private lateinit var settingsVersion: TextView
+
+    /**
+     * 版本号的唯一出处：问包管理器。不用 BuildConfig —— 它在 release 下可能被 R8 改名 / 内联，
+     * 而这个调用永远在。
+     */
+    private val appVersion: String
+        get() = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        }.getOrDefault("?")
     private lateinit var themeSwatch: TextView
     private lateinit var settingsTheme: TextView
     private lateinit var settingsNight: TextView
@@ -134,12 +172,22 @@ class MainActivity : AppCompatActivity() {
 
     /** 程序改开关/选项状态时别再回调自己一次，否则会和用户操作来回打架。 */
     private var syncingOverlaySwitch = false
-    private var syncingRouteToggle = false
-    private var syncingWechatImageToggle = false
     private var syncingConfirmSwitch = false
 
     /** 搜索防抖用的任务句柄：新输入到来时取消上一次尚未触发的查询。 */
     private var searchJob: Job? = null
+
+    /**
+     * 补全候选的弹出列表。
+     *
+     * 用弹窗而不是页面里的一行：候选展开时不该把下面的表情挤走。它不抢焦点，
+     * 所以键盘不会收起来，光标也一直留在搜索框里。
+     */
+    private var suggestionPopup: PopupWindow? = null
+
+    /** 语法快捷键（$TAG=、@、&、/）那一排，以及右边那颗「用法」。 */
+    private lateinit var searchSyntaxButtons: LinearLayout
+    private lateinit var searchSyntaxHint: TextView
 
     /**
      * 导入选择器：用 GetMultipleContents 让系统相册一次能勾多张。
@@ -273,6 +321,46 @@ class MainActivity : AppCompatActivity() {
         uri?.let { saveBallImage(it) }
     }
 
+    /**
+     * 「删掉导入的原文件」这一步交给系统的批量删除框：用户点了同意才会真删。
+     * 程序自己删不掉相册里别人的图，也不该删得掉。
+     */
+    private val mediaStoreDeleteLauncher = registerForActivityResult(
+        // 批量删除框是 PendingIntent，要用 IntentSender 版契约（Intent 版接不了）
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            reportSourceDelete(pendingDocDeleted + pendingMediaCount, pendingSkipped)
+        } else {
+            Toast.makeText(this, R.string.source_delete_denied, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 导出备份包：交给系统的「保存到…」，文件名先给个带时间戳的建议值。 */
+    private val exportPicker = registerForActivityResult(
+        ActivityResultContracts.CreateDocument(EmojiArchive.MIME)
+    ) { uri -> if (uri != null) runExport(uri) }
+
+    /** 导入备份包：备份包自己报 octet-stream（.emcpack 是自定义后缀，系统认不出它的类型）。 */
+    private val importPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) askImportMode(uri) }
+
+    /** 批量导出成一个 zip：建议名带时间戳，存哪儿由用户挑。 */
+    private val exportZipPicker = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> if (uri != null) runExportZip(uri) }
+
+    /** 批量导出到一个文件夹：逐张写进去，重名的自动加序号。 */
+    private val exportFolderPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri -> if (uri != null) runExportFolder(uri) }
+
+    /** 删原文件时的中间账：文档类已经删掉几个、有几个媒体文件在等系统确认、有几个删不掉。 */
+    private var pendingDocDeleted = 0
+    private var pendingMediaCount = 0
+    private var pendingSkipped = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 主题色是「基础主题 + overlay」，必须赶在 setContentView 之前套上。
@@ -293,9 +381,14 @@ class MainActivity : AppCompatActivity() {
         setupBottomNav()
         setupBackPress()
         observeViewModel()
+        // 是不是「从外面进来的」，要在下面两个 handle 之前问：它们会把 Intent 上的东西抹掉。
+        val fromShare = intent?.action == Intent.ACTION_SEND ||
+            intent?.action == Intent.ACTION_SEND_MULTIPLE
+        val fromTile = intent?.getBooleanExtra(BallTileService.EXTRA_FROM_TILE, false) == true
         // 从系统分享面板进来的图片 / GIF：界面都准备好了再导入，导完就能在表情页看到。
         handleShareIntent(intent)
         handleTileIntent(intent)
+        maybeShowOnboarding(savedInstanceState, fromShare, fromTile)
     }
 
     /**
@@ -315,11 +408,26 @@ class MainActivity : AppCompatActivity() {
         handleTileIntent(intent)
     }
 
+    /**
+     * 第一次正常启动时先走一遍使用引导（v0.1.414，用户 m09215）。
+     *
+     * 三种情况不打扰：转屏 / 配置变更导致的重建（savedInstanceState 非空）、
+     * 从系统分享面板进来（用户是来存图的，等他导完；下次正常启动还会出现）、
+     * 从下拉状态栏的磁贴进来（用户点的是球的开关，不该被一页引导挡住）。
+     */
+    private fun maybeShowOnboarding(
+        savedInstanceState: Bundle?,
+        fromShare: Boolean,
+        fromTile: Boolean
+    ) {
+        if (savedInstanceState != null || fromShare || fromTile) return
+        if (OnboardingPrefs.isDone(this)) return
+        startActivity(Intent(this, OnboardingActivity::class.java))
+    }
+
     private fun initViews() {
         toolbar = findViewById(R.id.toolbar)
-        val versionName = runCatching {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-        }.getOrDefault("?")
+        val versionName = appVersion
         // 标题栏副标题显示版本号，和 APK 文件名里的版本对得上，方便确认装的是哪一版。
         toolbar.subtitle = "v" + versionName
 
@@ -328,6 +436,8 @@ class MainActivity : AppCompatActivity() {
         bottomNav = findViewById(R.id.bottomNav)
 
         searchBar = findViewById(R.id.searchBar)
+        searchSyntaxButtons = findViewById(R.id.searchSyntaxButtons)
+        searchSyntaxHint = findViewById(R.id.searchSyntaxHint)
         filterContainer = findViewById(R.id.filterContainer)
         btnExpandTags = findViewById(R.id.btnExpandTags)
         tagPanel = findViewById(R.id.tagPanelScroll)
@@ -340,16 +450,15 @@ class MainActivity : AppCompatActivity() {
         btnSelectAll = findViewById(R.id.btnSelectAll)
         btnCancel = findViewById(R.id.btnCancel)
         btnOrganize = findViewById(R.id.btnOrganize)
+        btnExport = findViewById(R.id.btnExport)
 
-        // 主界面只留「服务没开」这一条提示（开着时它不占地方），点它直接去系统设置。
-        senderBanner = findViewById(R.id.senderBanner)
-        senderBanner.setOnClickListener { openAccessibilitySettings() }
+        // 标题行最右边的自动发送状态点（绿 = 已连上，黄 = 没开），点它直接去系统设置。
+        a11yIndicator = findViewById(R.id.a11yIndicator)
+        a11yDot = findViewById(R.id.a11yDot)
+        a11yIndicator.setOnClickListener { openAccessibilitySettings() }
 
         senderStatus = findViewById(R.id.senderStatus)
         findViewById<View>(R.id.rowA11y).setOnClickListener { openAccessibilitySettings() }
-        findViewById<View>(R.id.rowLog).setOnClickListener {
-            startActivity(Intent(this, SendLogActivity::class.java))
-        }
 
         switchOverlay = findViewById(R.id.switchOverlay)
         switchOverlay.setOnCheckedChangeListener { _, checked ->
@@ -368,24 +477,38 @@ class MainActivity : AppCompatActivity() {
         tileState = findViewById(R.id.tileState)
         findViewById<View>(R.id.rowAddTile).setOnClickListener { showTileHelp() }
 
-        routeToggle = findViewById(R.id.routeToggle)
-        routeHint = findViewById(R.id.routeHint)
-        routeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (isChecked && !syncingRouteToggle) {
-                applySendRoute(album = checkedId == R.id.btnRouteAlbum, fromUser = true)
-            }
+        // 存储管理：占用概览与压缩大图（v0.1.406）。
+        findViewById<View>(R.id.rowStorage).setOnClickListener {
+            startActivity(Intent(this, StorageActivity::class.java))
         }
 
-        wechatImageToggle = findViewById(R.id.wechatImageToggle)
-        wechatImageHint = findViewById(R.id.wechatImageHint)
-        wechatImageToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (isChecked && !syncingWechatImageToggle) {
-                applyWechatImage(clipboard = checkedId == R.id.btnWechatImageClipboard, fromUser = true)
-            }
+        // 表情发送方式、发送日志挪进了高级设置页；表情库迁移自 v0.1.406 起回到这里。
+        findViewById<View>(R.id.rowExport).setOnClickListener {
+            exportPicker.launch(EmojiArchive.suggestedName())
+        }
+        findViewById<View>(R.id.rowImport).setOnClickListener {
+            // 旧版导出的 .zip 包还得能选，所以压缩包的两个类型也一起收着。选错文件不会出事：
+            // 是不是备份包，由包里的清单说了算。
+            importPicker.launch(
+                arrayOf(
+                    "application/octet-stream",
+                    "application/zip",
+                    "application/x-zip-compressed"
+                )
+            )
+        }
+
+        findViewById<View>(R.id.rowAdvanced).setOnClickListener {
+            startActivity(Intent(this, AdvancedSettingsActivity::class.java))
         }
 
         settingsVersion = findViewById(R.id.settingsVersion)
         settingsVersion.text = getString(R.string.settings_version_sub, versionName)
+
+        // 版本行点开是版本页：图标 + 名字 + 版本号，GitHub 入口在那一页。
+        findViewById<View>(R.id.rowVersion).setOnClickListener {
+            startActivity(Intent(this, VersionActivity::class.java))
+        }
 
         setupUiSettings()
     }
@@ -418,7 +541,6 @@ class MainActivity : AppCompatActivity() {
     /** 设置页每次露面都重新取一遍状态：权限可能刚在系统设置里被改过。 */
     private fun refreshSettings() {
         refreshSenderStatus()
-        refreshSendRoute()
         refreshConfirmSwitch()
         refreshBallApps()
         refreshTileState()
@@ -691,65 +813,9 @@ class MainActivity : AppCompatActivity() {
             if (on) R.string.sender_status_on else R.string.sender_status_off
         )
         senderStatus.setTextColor(getColor(if (on) R.color.status_on else R.color.status_off))
-        // 只有关着的时候主界面才顶一条提示：开着就不占地方。
-        senderBanner.visibility = if (on) View.GONE else View.VISIBLE
-    }
-
-    /**
-     * 表情发到微信 / QQ 时走哪条路（全局）。默认「相册」：让应用自己走「＋ → 相册 → 第一格」，
-     * 直接落到当前聊天，不用认人、没有选人页，图片和动图都原样发出（v0.1.318 实测全程不弹隐私确认框）。
-     * 也可以切成「分享」：把图交给应用的分享入口，在聊天列表里点一下对象发送。
-     * 微信里那条例外（静态图片走剪贴板）由下面那一项单独管。
-     */
-    private fun refreshSendRoute() {
-        val album = SenderPrefs.sendViaAlbum(this)
-        syncingRouteToggle = true
-        routeToggle.check(if (album) R.id.btnRouteAlbum else R.id.btnRouteShare)
-        syncingRouteToggle = false
-        routeHint.setText(
-            if (album) R.string.settings_route_hint_album else R.string.settings_route_hint_share
-        )
-
-        val clipboard = SenderPrefs.wechatImageClipboard(this)
-        syncingWechatImageToggle = true
-        wechatImageToggle.check(
-            if (clipboard) R.id.btnWechatImageClipboard else R.id.btnWechatImageInherit
-        )
-        syncingWechatImageToggle = false
-        wechatImageHint.setText(
-            if (clipboard) R.string.settings_wechat_image_hint_clipboard
-            else R.string.settings_wechat_image_hint_inherit
-        )
-    }
-
-    private fun applySendRoute(album: Boolean, fromUser: Boolean) {
-        SenderPrefs.setSendViaAlbum(this, album)
-        routeHint.setText(
-            if (album) R.string.settings_route_hint_album else R.string.settings_route_hint_share
-        )
-        if (fromUser) {
-            Toast.makeText(
-                this,
-                if (album) R.string.route_switched_album else R.string.route_switched_share,
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    private fun applyWechatImage(clipboard: Boolean, fromUser: Boolean) {
-        SenderPrefs.setWechatImageClipboard(this, clipboard)
-        wechatImageHint.setText(
-            if (clipboard) R.string.settings_wechat_image_hint_clipboard
-            else R.string.settings_wechat_image_hint_inherit
-        )
-        if (fromUser) {
-            Toast.makeText(
-                this,
-                if (clipboard) R.string.wechat_image_switched_clipboard
-                else R.string.wechat_image_switched_inherit,
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        // 标题行最右边那颗状态点：连着是绿的，没开是黄的。
+        a11yDot.backgroundTintList =
+            ColorStateList.valueOf(getColor(if (on) R.color.status_on else R.color.status_off))
     }
 
     /**
@@ -769,6 +835,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyAutoConfirm(on: Boolean, fromUser: Boolean) {
+        // 高危操作：把「最后一下」交给程序点之前先问一次（关掉不用问）。取消就把开关拨回去。
+        if (on && fromUser && !SenderPrefs.autoConfirmLastStep(this)) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.confirm_auto_send_title)
+                .setMessage(R.string.confirm_auto_send_message)
+                .setPositiveButton(R.string.confirm_auto_send_ok) { _, _ ->
+                    commitAutoConfirm(true, fromUser = true)
+                }
+                .setNegativeButton(R.string.confirm_auto_send_cancel) { _, _ -> refreshConfirmSwitch() }
+                .setOnCancelListener { refreshConfirmSwitch() }
+                .show()
+            return
+        }
+        commitAutoConfirm(on, fromUser)
+    }
+
+    private fun commitAutoConfirm(on: Boolean, fromUser: Boolean) {
         SenderPrefs.setAutoConfirmLastStep(this, on)
         confirmHint.setText(
             if (on) R.string.settings_confirm_hint_on else R.string.settings_confirm_hint_off
@@ -1026,7 +1109,7 @@ class MainActivity : AppCompatActivity() {
             }
             resolved.map { it.activityInfo.packageName }
         }.getOrElse {
-            SendLog.d("悬浮球", "启动项查询失败：" + (it.message ?: it.javaClass.simpleName))
+            SendLog.w("悬浮球", "启动项查询失败：" + (it.message ?: it.javaClass.simpleName))
             emptyList()
         }
         val byInstalled = if (byLauncher.size < 3) {
@@ -1155,7 +1238,7 @@ class MainActivity : AppCompatActivity() {
         intent.removeExtra(BallTileService.EXTRA_FROM_TILE)
         val startBall = intent.getBooleanExtra(BallTileService.EXTRA_START_BALL, false)
         intent.removeExtra(BallTileService.EXTRA_START_BALL)
-        SendLog.d("磁贴", "打开界面兜底：startBall=" + startBall)
+        SendLog.w("磁贴", "打开界面兜底：startBall=" + startBall)
         bottomNav.selectedItemId = R.id.tab_settings
         showSettingsPage(true)
         setOverlayEnabled(true)
@@ -1173,20 +1256,171 @@ class MainActivity : AppCompatActivity() {
                     delay(SEARCH_DEBOUNCE_MS)
                     viewModel.setSearchQuery(query)
                 }
+                // 候选只在本机内存里筛，不碰数据库，所以不用等防抖
+                refreshSearchSuggestions()
             }
         })
 
-        // 提示语跟着搜索模式走：敲了 $TAG: 就告诉用户现在搜的是标签名
-        lifecycleScope.launch {
-            viewModel.searchMode.collectLatest { mode ->
-                searchBar.hint = getString(
-                    when (mode) {
-                        SearchMode.TAG -> R.string.search_hint_tag
-                        else -> R.string.search_hint
-                    }
-                )
+        // 语法快捷键：$ @ & / 在手机键盘上要翻页才找得到，点一下直接插进光标处
+        addSyntaxChip(R.string.search_syntax_tag) { insertSearchText("\$TAG=\$") }
+        addSyntaxChip(R.string.search_syntax_keyword) { insertSearchText("@") }
+        addSyntaxChip(R.string.search_syntax_and) { insertSearchText("&") }
+        addSyntaxChip(R.string.search_syntax_or) { insertSearchText("/") }
+        searchSyntaxHint.setOnClickListener { showSearchSyntaxDialog() }
+
+        searchBar.setOnFocusChangeListener { _, hasFocus ->
+            // 候选只认标签，标签本身是实时流，不用在这里重取数据；失焦时收起来就够了。
+            if (!hasFocus) dismissSuggestions()
+        }
+    }
+
+    /** 语法快捷键 chip：与标签面板里的功能 chip 同一套颜色，跟筛选条上的筛选 chip 区分开。 */
+    private fun addSyntaxChip(labelRes: Int, onClick: () -> Unit) {
+        searchSyntaxButtons.addView(createPanelActionChip(getString(labelRes), onClick))
+    }
+
+    /**
+     * 往搜索框光标处插一段符号。
+     *
+     * 插完光标停在符号中间（$TAG=▍$、@▍@），接下来敲的字就是这个条件的内容。
+     */
+    private fun insertSearchText(snippet: String) {
+        val text = searchBar.text?.toString().orEmpty()
+        val at = searchBar.selectionEnd.coerceIn(0, text.length)
+        searchBar.setText(text.substring(0, at) + snippet + text.substring(at))
+        val back = if (snippet.length > 1 && snippet.endsWith("$")) 1 else 0
+        searchBar.setSelection(at + snippet.length - back)
+        searchBar.requestFocus()
+        // setText 触发的那次刷新用的是旧光标位置，这里按新位置重算一遍
+        refreshSearchSuggestions()
+    }
+
+    /**
+     * 光标所在那一段条件的起止：上一个 & 或 / 之后，到光标之前。
+     *
+     * $…$、@…@ 里面的 & 与 / 算内容不算分隔符，所以成对的符号要跳过。
+     */
+    private fun currentChunk(text: String, cursor: Int): IntRange {
+        var start = 0
+        var open = ' '
+        for (i in 0 until cursor) {
+            val c = text[i]
+            when {
+                open != ' ' && c == open -> open = ' '
+                open == ' ' && (c == '$' || c == '@') -> open = c
+                open == ' ' && (c == '&' || c == '/') -> start = i + 1
             }
         }
+        // 分隔符后面的空白不算条件的一部分，否则「这段以 $ 开头」会被一个空格带偏
+        while (start < cursor && text[start].isWhitespace()) start++
+        return start until cursor
+    }
+
+    /**
+     * 补全候选：只补标签，关键词不参与联想。
+     *
+     * 光标那一段写成标签条件（$…）就补成完整写法，只是一个光秃秃的词时只把词补全、
+     * 不替用户加符号（加了会悄悄改变搜索范围）。写成关键词条件（@…）时不给候选 ——
+     * 表情名动辄上千条，全列出来帮不上忙，想精确匹配直接写 @名字@。
+     */
+    private fun suggestionsFor(text: String, cursor: Int): List<SearchSuggestion> {
+        val chunk = currentChunk(text, cursor)
+        val raw = text.substring(chunk.first, cursor).trim()
+        if (raw.isEmpty() || raw.startsWith("@")) return emptyList()
+        val tagWriting = raw.startsWith("$")
+        val query = (if (tagWriting) EmojiFilter.tagBody(raw.substring(1)) else raw).trim()
+
+        return viewModel.tags.value
+            .filter { it.name.contains(query, ignoreCase = true) }
+            .map { tag ->
+                if (tagWriting) {
+                    val term = "\$TAG=" + tag.name + "$"
+                    SearchSuggestion(term, term)
+                } else {
+                    SearchSuggestion(getString(R.string.search_suggest_tag, tag.name), tag.name)
+                }
+            }
+            .filter { it.insert != raw }
+            .take(MAX_SEARCH_SUGGESTIONS)
+    }
+
+    /** 画补全候选：有候选就在搜索框下面弹出列表，没有就收起来。 */
+    private fun refreshSearchSuggestions() {
+        val text = searchBar.text?.toString().orEmpty()
+        val cursor = searchBar.selectionEnd.coerceIn(0, text.length)
+        val items = suggestionsFor(text, cursor)
+        val width = searchBar.width
+        if (items.isEmpty() || width <= 0) {
+            dismissSuggestions()
+            return
+        }
+
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        items.forEach { item ->
+            val row = layoutInflater.inflate(R.layout.item_search_suggestion, column, false) as TextView
+            row.text = item.label
+            row.setOnClickListener { applySuggestion(item.insert) }
+            column.addView(row)
+        }
+        val content = ScrollView(this).apply { addView(column) }
+        val maxHeight = (MAX_SUGGESTION_HEIGHT_DP * resources.displayMetrics.density).toInt()
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST)
+        )
+
+        val popup = suggestionPopup ?: PopupWindow(this).apply {
+            // 不抢焦点：键盘不收、光标不丢；点别处就收起来（背景非空是这条生效的前提）。
+            isFocusable = false
+            isOutsideTouchable = true
+            setBackgroundDrawable(getDrawable(R.drawable.bg_search_dropdown))
+            elevation = 6f * resources.displayMetrics.density
+            suggestionPopup = this
+        }
+        popup.contentView = content
+        if (popup.isShowing) {
+            popup.update(searchBar, width, content.measuredHeight)
+        } else {
+            popup.width = width
+            popup.height = content.measuredHeight
+            popup.showAsDropDown(searchBar, 0, (SUGGESTION_GAP_DP * resources.displayMetrics.density).toInt())
+        }
+    }
+
+    /** 收起补全候选。 */
+    private fun dismissSuggestions() {
+        suggestionPopup?.dismiss()
+    }
+
+    /** 拿一条补全结果替换光标所在的那一段，光标落到词尾，接着敲的字接在后面。 */
+    private fun applySuggestion(insert: String) {
+        val text = searchBar.text?.toString().orEmpty()
+        val cursor = searchBar.selectionEnd.coerceIn(0, text.length)
+        val chunk = currentChunk(text, cursor)
+        // 光标后面正好是收尾符号时一并吃掉：$TAG=猫▍$ 补成 $TAG=猫咪$，而不是 $TAG=猫咪$$
+        var end = cursor
+        if (end < text.length && (insert.endsWith("$") || insert.endsWith("@")) && text[end] == insert.last()) {
+            end++
+        }
+        searchBar.setText(text.substring(0, chunk.first) + insert + text.substring(end))
+        searchBar.setSelection(chunk.first + insert.length)
+        searchBar.requestFocus()
+        // 补成完整条件（收尾符号都补上了）就把列表收起来，这一段没什么可再补的了；
+        // 只补了一个光秃秃的词，就按新位置再算一次候选。
+        if (insert.endsWith("$") || insert.endsWith("@")) {
+            dismissSuggestions()
+        } else {
+            refreshSearchSuggestions()
+        }
+    }
+
+    /** 用法说明：三种写法、两个连接符、一个例子。 */
+    private fun showSearchSyntaxDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.search_syntax_title)
+            .setMessage(R.string.search_syntax_message)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     // ---------- 筛选条与标签面板 ----------
@@ -1202,14 +1436,16 @@ class MainActivity : AppCompatActivity() {
         btnExpandTags.setOnClickListener { toggleTagPanel() }
 
         lifecycleScope.launch {
+            // tagMatchAll 必须算一路：它一变，面板里那颗「同时满足 / 任一满足」的文字就得跟着换
             combine(
                 viewModel.tags,
                 viewModel.selectedTagIds,
+                viewModel.tagMatchAll,
                 viewModel.favoritesOnly
-            ) { tags, ids, favorites -> Triple(tags, ids, favorites) }
-                .collectLatest { (tags, ids, favorites) ->
-                    updateFilterChips(tags, ids, favorites)
-                    updateTagPanel(tags, ids)
+            ) { tags, ids, matchAll, favorites -> FilterState(tags, ids, matchAll, favorites) }
+                .collectLatest { state ->
+                    updateFilterChips(state.tags, state.ids, state.favoritesOnly)
+                    updateTagPanel(state.tags, state.ids, state.matchAll)
                 }
         }
     }
@@ -1311,8 +1547,7 @@ class MainActivity : AppCompatActivity() {
      * 长按任意一颗标签可以重命名或删除它 —— 标签的管理动作都挂在标签自己身上，
      * 不用先进某个管理页面再找它。
      */
-    private fun updateTagPanel(tags: List<TagEntity>, ids: Set<Long>) {
-        val matchAll = viewModel.tagMatchAll.value
+    private fun updateTagPanel(tags: List<TagEntity>, ids: Set<Long>, matchAll: Boolean) {
         val showMatch = ids.size > 1
         val key = tags.joinToString(",") { it.name } + "|" + matchAll + "|" + showMatch
         if (key != tagPanelKey) {
@@ -1332,7 +1567,7 @@ class MainActivity : AppCompatActivity() {
             if (showMatch) {
                 tagGrid.addView(
                     createPanelActionChip(matchModeLabel(matchAll)) {
-                        viewModel.setTagMatchAll(!viewModel.tagMatchAll.value)
+                        viewModel.setTagMatchAll(!matchAll)
                     }
                 )
             }
@@ -1625,7 +1860,98 @@ class MainActivity : AppCompatActivity() {
 
         // 「整理」只在选择模式下出现：批量改包、批量加/摘标签
         btnOrganize.setOnClickListener { showOrganizeDialog() }
+
+        // 「导出」只把图片复制出去，库里的原图不动，所以不走删除那套二次确认。
+        btnExport.setOnClickListener { showExportDialog() }
     }
+
+    /**
+     * 批量导出：先问打包成一个 zip 还是逐张放进文件夹。
+     *
+     * 两种都只读库里的文件，不改数据库也不删原图 —— 导出失败最多是目标位置写不进去。
+     */
+    private fun showExportDialog() {
+        if (selectedEmojis().isEmpty()) {
+            Toast.makeText(this, R.string.export_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.export_pick_title)
+            .setMessage(R.string.export_pick_message)
+            .setNeutralButton(R.string.export_pick_folder) { _, _ -> exportFolderPicker.launch(null) }
+            .setPositiveButton(R.string.export_pick_zip) { _, _ ->
+                exportZipPicker.launch(getString(R.string.export_zip_name, timestamp()))
+            }
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .show()
+    }
+
+    private fun selectedEmojis(): List<EmojiEntity> {
+        val ids = viewModel.selectedIds.value
+        return viewModel.emojis.value.filter { ids.contains(it.id) }
+    }
+
+    private fun exportTargets(): List<ExportTarget> =
+        selectedEmojis().map { ExportTarget(it.name, it.filePath) }
+
+    private fun runExportZip(target: Uri) {
+        val targets = exportTargets()
+        if (targets.isEmpty()) {
+            Toast.makeText(this, R.string.export_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val dialog = busyDialog(R.string.export_progress_title, R.string.export_progress)
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) {
+                val out = runCatching { contentResolver.openOutputStream(target, "w") }.getOrNull()
+                if (out == null) {
+                    ImageExporter.Report(0, targets.size, 0L)
+                } else {
+                    out.use { ImageExporter.zip(it, targets) }
+                }
+            }
+            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            Toast.makeText(this@MainActivity, exportResultText(report, zip = true), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun runExportFolder(treeUri: Uri) {
+        val targets = exportTargets()
+        if (targets.isEmpty()) {
+            Toast.makeText(this, R.string.export_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val dialog = busyDialog(R.string.export_progress_title, R.string.export_progress)
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) {
+                ImageExporter.copyToTree(this@MainActivity, treeUri, targets) { done, total ->
+                    showProgress(dialog, R.string.export_progress, done, total)
+                }
+            }
+            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            Toast.makeText(this@MainActivity, exportResultText(report, zip = false), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportResultText(report: ImageExporter.Report, zip: Boolean): String = when {
+        report.written == 0 -> getString(R.string.export_none)
+        else -> buildString {
+            append(
+                if (zip) {
+                    getString(
+                        R.string.export_done_zip,
+                        report.written,
+                        Formatter.formatShortFileSize(this@MainActivity, report.bytes)
+                    )
+                } else {
+                    getString(R.string.export_done_folder, report.written)
+                }
+            )
+            if (report.failed > 0) append(getString(R.string.export_partial, report.failed))
+        }
+    }
+
+    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date())
 
     private fun observeViewModel() {
         lifecycleScope.launch {
@@ -1645,6 +1971,7 @@ class MainActivity : AppCompatActivity() {
                 btnSelectAll.visibility = if (isSelectionMode) View.VISIBLE else View.GONE
                 btnCancel.visibility = if (isSelectionMode) View.VISIBLE else View.GONE
                 btnOrganize.visibility = if (isSelectionMode) View.VISIBLE else View.GONE
+                btnExport.visibility = if (isSelectionMode) View.VISIBLE else View.GONE
                 adapter.notifyDataSetChanged()
             }
         }
@@ -1652,6 +1979,8 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             viewModel.selectedIds.collectLatest { selectedIds ->
                 btnDelete.text = getString(R.string.btn_delete_count, selectedIds.size)
+                btnExport.text = getString(R.string.btn_export_count, selectedIds.size)
+                btnExport.isEnabled = selectedIds.isNotEmpty()
                 adapter.notifyDataSetChanged()
             }
         }
@@ -1702,6 +2031,137 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- 表情库迁移（导出 / 导入备份包）----
+    // v0.1.406 起从高级设置页搬回这里，入口就在「高级设置」上面。
+
+    /** 导出：交给系统的「保存到…」，拿到目标 URI 后一边写一边报进度。 */
+    private fun runExport(target: Uri) {
+        val dialog = busyDialog(R.string.archive_export_progress_title, R.string.archive_export_progress)
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) {
+                val out = runCatching { contentResolver.openOutputStream(target, "w") }.getOrNull()
+                if (out == null) {
+                    null
+                } else {
+                    out.use { stream ->
+                        viewModel.exportLibrary(stream) { done, total ->
+                            showProgress(dialog, R.string.archive_export_progress, done, total)
+                        }
+                    }
+                }
+            }
+            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            if (report == null) {
+                Toast.makeText(this@MainActivity, getString(R.string.archive_err_generic), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val text = when {
+                report.error != null -> errorText(report.error)
+                report.emojis == 0 && report.failed == 0 -> getString(R.string.archive_export_empty)
+                else -> buildString {
+                    append(
+                        getString(
+                            R.string.archive_export_done,
+                            report.emojis,
+                            report.tags,
+                            Formatter.formatShortFileSize(this@MainActivity, report.bytes)
+                        )
+                    )
+                    if (report.failed > 0) append(getString(R.string.archive_export_done_missing, report.failed))
+                }
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.settings_export_title)
+                .setMessage(text)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+    }
+
+    /** 导入：合并还是覆盖，先问一句。 */
+    private fun askImportMode(source: Uri) {
+        val modes = arrayOf(getString(R.string.archive_import_merge), getString(R.string.archive_import_replace))
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.archive_import_mode_title)
+            .setItems(modes) { _, which ->
+                if (which == 0) runImport(source, EmojiArchive.Mode.MERGE) else askBeforeReplace(source)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /** 覆盖导入会把现有的表情和标签全清掉，先把「现在有多少张」摆给用户看。 */
+    private fun askBeforeReplace(source: Uri) {
+        lifecycleScope.launch {
+            val existing = withContext(Dispatchers.IO) { viewModel.countEmojisOnce() }
+            if (existing == 0) {
+                runImport(source, EmojiArchive.Mode.REPLACE)
+                return@launch
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.archive_import_replace_title)
+                .setMessage(getString(R.string.archive_import_replace_message, existing))
+                .setPositiveButton(R.string.archive_import_replace) { _, _ ->
+                    runImport(source, EmojiArchive.Mode.REPLACE)
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
+    }
+
+    /** 导入：解包 + 入库都在 importLibrary 里做完，回来的就是最终结果。 */
+    private fun runImport(source: Uri, mode: EmojiArchive.Mode) {
+        val dialog = busyDialog(R.string.archive_import_progress_title, R.string.archive_import_progress)
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) {
+                viewModel.importLibrary(
+                    openInput = { runCatching { contentResolver.openInputStream(source) }.getOrNull() },
+                    mode = mode
+                ) { done, total ->
+                    showProgress(dialog, R.string.archive_import_progress, done, total)
+                }
+            }
+            if (!isFinishing && !isDestroyed) dialog.dismiss()
+            val text = when {
+                report.error != null -> errorText(report.error)
+                else -> buildString {
+                    append(getString(R.string.archive_import_done, report.emojis, report.tags))
+                    if (report.skipped > 0) append(getString(R.string.archive_import_done_skipped, report.skipped))
+                    if (report.failed > 0) append(getString(R.string.archive_import_done_failed, report.failed))
+                }
+            }
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.settings_import_title)
+                .setMessage(text)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+    }
+
+    private fun errorText(error: EmojiArchive.Error): String = when (error) {
+        EmojiArchive.Error.NOT_ARCHIVE -> getString(R.string.archive_err_not_archive)
+        EmojiArchive.Error.BROKEN -> getString(R.string.archive_err_broken)
+        EmojiArchive.Error.UNREADABLE -> getString(R.string.archive_err_unreadable)
+        EmojiArchive.Error.IO -> getString(R.string.archive_err_generic)
+    }
+
+    /** 迁移期间不让点掉：进度框一关就不知道还在不在写。 */
+    private fun busyDialog(titleRes: Int, formatRes: Int): AlertDialog {
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(titleRes)
+            .setMessage(getString(formatRes, 0, 0))
+            .setCancelable(false)
+            .create()
+        dialog.show()
+        return dialog
+    }
+
+    private fun showProgress(dialog: AlertDialog, formatRes: Int, done: Int, total: Int) {
+        runOnUiThread {
+            if (dialog.isShowing && !isFinishing) dialog.setMessage(getString(formatRes, done, total))
+        }
+    }
+
     /** 一张图的导入结果：拿到真名 / 没拿到（用导入时间兜底）/ 失败。 */
     private enum class ImportOutcome { OK, NAME_FALLBACK, FAILED }
 
@@ -1742,7 +2202,124 @@ class MainActivity : AppCompatActivity() {
                 progress?.dismiss()
             }
             showImportResult(ok, failed, noName)
+            // 一张都没进来就别动用户的原文件（见「导入后的原文件怎么办」这条策略）。
+            if (ok > 0) handleSourceFiles(uris)
         }
+    }
+
+    /**
+     * 导入成功后按用户在「高级设置 → 表情原文件」里选的策略处理源文件。
+     *
+     * 只碰 [sources] 这几个 Uri —— 不扫相册、不按目录找文件（[SourceFiles] 开头写了三条底线）。
+     * 文件是用户自己刚选的，所以这里不再问「要不要处理」，只在「删除」这一策略上多问一次。
+     *
+     * 文件夹导入（[importFolder]）暂时不套这条策略：那里一次可能进来上千个文件，
+     * 逐个删要弹无数次系统框，等以后单独做。
+     */
+    private fun handleSourceFiles(sources: List<Uri>) {
+        if (sources.isEmpty()) return
+        when (ImportPrefs.policy(this)) {
+            ImportPrefs.POLICY_ZIP -> {
+                val tree = ImportPrefs.zipTreeUri(this)
+                if (tree == null) {
+                    Toast.makeText(this, R.string.source_zip_need_dir, Toast.LENGTH_LONG).show()
+                    return
+                }
+                val dialog = MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.source_zip_title)
+                    .setMessage(getString(R.string.import_progress_format, 1, sources.size))
+                    .setCancelable(false)
+                    .show()
+                val zipName = SourceFiles.zipName()
+                lifecycleScope.launch {
+                    val zipped = withContext(Dispatchers.IO) {
+                        runCatching {
+                            SourceFiles.zipSources(
+                                this@MainActivity,
+                                Uri.parse(tree),
+                                sources,
+                                zipName
+                            )
+                        }.getOrNull()
+                    }
+                    dialog.dismiss()
+                    if (zipped.isNullOrEmpty()) {
+                        // 包没写成，源文件一个都不删（zipSources 自己也会把半成品删掉）。
+                        Toast.makeText(this@MainActivity, R.string.source_zip_failed, Toast.LENGTH_LONG)
+                            .show()
+                        return@launch
+                    }
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.source_zip_done, zipName),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    // 只删**确实进了包**的那些：读不出来的那些留在原处，不冒险。
+                    startSourceDelete(zipped)
+                }
+            }
+
+            ImportPrefs.POLICY_DELETE -> MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.source_delete_title)
+                .setMessage(getString(R.string.source_delete_message, sources.size))
+                .setPositiveButton(R.string.source_delete) { _, _ -> startSourceDelete(sources) }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+
+            else -> Unit
+        }
+    }
+
+    /**
+     * 删原文件。两条路分开走：
+     * - 文件选择器 / 文件夹来的（DocumentsProvider 管的）直接请它删；
+     * - 相册里的图（MediaStore 管的）交给系统的批量删除请求，用户点同意才删得掉。
+     */
+    private fun startSourceDelete(uris: List<Uri>) {
+        lifecycleScope.launch {
+            val (docCount, docDeleted, media) = withContext(Dispatchers.IO) {
+                val mediaUris = SourceFiles.mediaUrisForDelete(this@MainActivity, uris)
+                val docUris = uris.filterNot { it in mediaUris }
+                val deleted = if (docUris.isEmpty()) 0 else
+                    SourceFiles.deleteDocuments(this@MainActivity, docUris)
+                Triple(docUris.size, deleted, mediaUris)
+            }
+            pendingDocDeleted = docDeleted
+            pendingSkipped = docCount - docDeleted
+            pendingMediaCount = 0
+
+            if (media.isEmpty()) {
+                reportSourceDelete(pendingDocDeleted, pendingSkipped)
+                return@launch
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                // Android 11 之前没有批量删除请求，别人的图我们删不掉，如实说。
+                pendingSkipped += media.size
+                reportSourceDelete(pendingDocDeleted, pendingSkipped)
+                return@launch
+            }
+            val launched = runCatching {
+                val request = MediaStore.createDeleteRequest(contentResolver, media)
+                mediaStoreDeleteLauncher.launch(
+                    IntentSenderRequest.Builder(request.intentSender).build()
+                )
+            }.isSuccess
+            if (launched) {
+                pendingMediaCount = media.size
+            } else {
+                pendingSkipped += media.size
+                reportSourceDelete(pendingDocDeleted, pendingSkipped)
+            }
+        }
+    }
+
+    private fun reportSourceDelete(deleted: Int, skipped: Int) {
+        val text = buildString {
+            if (deleted > 0) append(getString(R.string.source_delete_done, deleted))
+            if (deleted > 0 && skipped > 0) append("；")
+            if (skipped > 0) append(getString(R.string.source_delete_skipped, skipped))
+        }
+        if (text.isNotEmpty()) Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     }
 
     /**
@@ -1815,6 +2392,12 @@ class MainActivity : AppCompatActivity() {
             putExtra(EmojiDetailActivity.EXTRA_EMOJI_ID, emoji.id)
         }
         startActivity(intent)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // 候选列表是独立窗口，页面退到后台前先收掉，免得它留在屏幕上
+        dismissSuggestions()
     }
 
     override fun onResume() {

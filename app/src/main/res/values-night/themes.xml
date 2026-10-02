@@ -3,13 +3,14 @@
     <!--
       深色模式：只换父主题和状态栏/导航栏那两行开关，颜色槽位引用的是同一批名字
       （palette_* 在 values-night/colors.xml 里已经换成深色版），所以主题色 overlay
-      在深色下照样有效。
+      在深色下照样有效。深色下线条色不用压深：原色压在暗底上本来就有 9.7~12.8:1。
     -->
     <style name="Theme.EmojiChan" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/palette_blue_primary</item>
         <item name="colorOnPrimary">@color/palette_blue_on_primary</item>
         <item name="colorPrimaryContainer">@color/palette_blue_primary_container</item>
         <item name="colorOnPrimaryContainer">@color/palette_blue_on_primary_container</item>
+        <item name="colorAccentStroke">@color/palette_blue_stroke</item>
 
         <item name="colorSecondary">@color/palette_blue_secondary</item>
         <item name="colorOnSecondary">@color/palette_blue_on_secondary</item>
@@ -26,12 +27,15 @@
         <item name="colorOutlineVariant">@color/divider</item>
         <item name="colorError">@color/danger</item>
 
-        <item name="colorAccent">@color/palette_blue_primary</item>
+        <item name="colorAccent">@color/palette_blue_stroke</item>
         <item name="android:colorBackground">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- 弹窗按钮换成本地覆盖（见 values/themes.xml），用深色墨字 -->
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.EmojiChan.Dialog</item>
     </style>
 </resources>

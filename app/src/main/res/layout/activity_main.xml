@@ -17,7 +17,54 @@
         android:paddingTop="6dp"
         app:subtitleTextAppearance="@style/TextAppearance.EmojiChan.Subtitle"
         app:title="@string/app_name"
-        app:titleTextAppearance="@style/TextAppearance.EmojiChan.Title" />
+        app:titleTextAppearance="@style/TextAppearance.EmojiChan.Title">
+
+        <!-- 自动发送状态：跟标题同行的最右边。绿点 = 无障碍服务已连上，黄点 = 没开；
+             点一下直接去系统无障碍设置（原来那条占一整行的黄色提示条撤了） -->
+        <LinearLayout
+            android:id="@+id/a11yIndicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="6dp"
+            android:paddingEnd="12dp"
+            android:paddingVertical="6dp">
+
+            <View
+                android:id="@+id/a11yDot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_status_dot" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/a11yText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/a11y_indicator_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/a11ySub"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/a11y_indicator_sub"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.appbar.MaterialToolbar>
 
     <FrameLayout
         android:layout_width="match_parent"
@@ -31,29 +78,51 @@
             android:layout_height="match_parent"
             android:orientation="vertical">
 
-            <!-- 无障碍服务没开时的提示条（开着就藏起来，不占地方） -->
-            <TextView
-                android:id="@+id/senderBanner"
+
+            <!-- 语法快捷键：$TAG=、@、&、/ 点一下插进搜索框。放在搜索框上面：
+                 下面的补全列表是弹出式的，摆在这一排的位置就把它们挡住了 -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginHorizontal="16dp"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/bg_banner_warning"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingHorizontal="14dp"
-                android:paddingVertical="10dp"
-                android:text="@string/banner_a11y_off"
-                android:textColor="@color/on_warning_container"
-                android:textSize="13sp"
-                android:visibility="gone" />
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp">
+
+                <HorizontalScrollView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/searchSyntaxButtons"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
+                <TextView
+                    android:id="@+id/searchSyntaxHint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="6dp"
+                    android:text="@string/search_syntax_help"
+                    android:textColor="?attr/colorAccentStroke"
+                    android:textSize="12sp" />
+            </LinearLayout>
 
             <EditText
                 android:id="@+id/searchBar"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:layout_marginHorizontal="16dp"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="6dp"
                 android:background="@drawable/search_bg"
                 android:drawableStart="@android:drawable/ic_menu_search"
                 android:drawablePadding="10dp"
@@ -67,6 +136,14 @@
                 android:textColor="@color/text_primary"
                 android:textColorHint="@color/text_secondary"
                 android:textSize="15sp" />
+
+            <!-- 搜索这一块（快捷键、搜索框、候选）跟下面的「标签」按钮和筛选 chip 不是一回事，用一条线分开 -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginHorizontal="16dp"
+                android:layout_marginTop="10dp"
+                android:background="@color/divider" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -166,6 +243,12 @@
 
                 <Button
                     android:id="@+id/btnImport"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
                     style="@style/Widget.Material3.Button"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -176,45 +259,105 @@
 
                 <Button
                     android:id="@+id/btnDelete"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
+                    android:textColor="?attr/colorAccentStroke"
+                    app:strokeColor="?attr/colorAccentStroke"
                     style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginHorizontal="4dp"
                     android:layout_weight="1"
+                    android:maxLines="1"
                     android:text="@string/btn_delete"
+                    android:textSize="12sp"
                     android:visibility="gone"
                     app:cornerRadius="14dp" />
 
                 <Button
                     android:id="@+id/btnSelectAll"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
+                    android:textColor="?attr/colorAccentStroke"
+                    app:strokeColor="?attr/colorAccentStroke"
                     style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginHorizontal="4dp"
                     android:layout_weight="1"
+                    android:maxLines="1"
                     android:text="@string/btn_select_all"
+                    android:textSize="12sp"
                     android:visibility="gone"
                     app:cornerRadius="14dp" />
 
                 <Button
                     android:id="@+id/btnOrganize"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
+                    android:textColor="?attr/colorAccentStroke"
+                    app:strokeColor="?attr/colorAccentStroke"
                     style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginHorizontal="4dp"
                     android:layout_weight="1"
+                    android:maxLines="1"
                     android:text="@string/btn_organize"
+                    android:textSize="12sp"
+                    android:visibility="gone"
+                    app:cornerRadius="14dp" />
+
+                <Button
+                    android:id="@+id/btnExport"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
+                    android:textColor="?attr/colorAccentStroke"
+                    app:strokeColor="?attr/colorAccentStroke"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="4dp"
+                    android:layout_weight="1"
+                    android:maxLines="1"
+                    android:text="@string/btn_export"
+                    android:textSize="12sp"
                     android:visibility="gone"
                     app:cornerRadius="14dp" />
 
                 <Button
                     android:id="@+id/btnCancel"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="12sp"
+                    app:autoSizeStepGranularity="1sp"
+                    android:textColor="?attr/colorAccentStroke"
                     style="@style/Widget.Material3.Button.TextButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_weight="1"
+                    android:maxLines="1"
                     android:text="@string/btn_cancel_select"
+                    android:textSize="12sp"
                     android:visibility="gone"
                     app:cornerRadius="14dp" />
             </LinearLayout>
@@ -235,6 +378,72 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
+
+                <!-- 存储管理（v0.1.406）：占用情况、压缩大图都在里面。 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/settings_section_storage"
+                    android:textAppearance="@style/EmojiChan.SectionLabel" />
+
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    app:cardBackgroundColor="@color/surface"
+                    app:cardCornerRadius="18dp"
+                    app:cardElevation="0dp"
+                    app:strokeColor="@color/divider"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <LinearLayout
+                            android:id="@+id/rowStorage"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_storage_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:text="@string/settings_storage_sub"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="›"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="18sp" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -494,119 +703,6 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_marginTop="20dp"
-                    android:text="@string/settings_section_route"
-                    android:textAppearance="@style/EmojiChan.SectionLabel" />
-
-                <com.google.android.material.card.MaterialCardView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    app:cardBackgroundColor="@color/surface"
-                    app:cardCornerRadius="18dp"
-                    app:cardElevation="0dp"
-                    app:strokeColor="@color/divider"
-                    app:strokeWidth="1dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/settings_route_title"
-                            android:textColor="@color/text_primary"
-                            android:textSize="15sp" />
-
-                        <com.google.android.material.button.MaterialButtonToggleGroup
-                            android:id="@+id/routeToggle"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            app:selectionRequired="true"
-                            app:singleSelection="true">
-
-                            <Button
-                                android:id="@+id/btnRouteAlbum"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/settings_route_album" />
-
-                            <Button
-                                android:id="@+id/btnRouteShare"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/settings_route_share" />
-                        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-                        <TextView
-                            android:id="@+id/routeHint"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:textColor="@color/text_secondary"
-                            android:textSize="12sp" />
-
-                        <View
-                            android:layout_width="match_parent"
-                            android:layout_height="1dp"
-                            android:layout_marginTop="14dp"
-                            android:background="@color/divider" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:text="@string/settings_wechat_image_title"
-                            android:textColor="@color/text_primary"
-                            android:textSize="15sp" />
-
-                        <com.google.android.material.button.MaterialButtonToggleGroup
-                            android:id="@+id/wechatImageToggle"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            app:selectionRequired="true"
-                            app:singleSelection="true">
-
-                            <Button
-                                android:id="@+id/btnWechatImageInherit"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/settings_wechat_image_inherit" />
-
-                            <Button
-                                android:id="@+id/btnWechatImageClipboard"
-                                style="?attr/materialButtonOutlinedStyle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/settings_wechat_image_clipboard" />
-                        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-                        <TextView
-                            android:id="@+id/wechatImageHint"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:textColor="@color/text_secondary"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </com.google.android.material.card.MaterialCardView>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginTop="20dp"
                     android:text="@string/settings_section_ui"
                     android:textAppearance="@style/EmojiChan.SectionLabel" />
 
@@ -829,7 +925,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_marginTop="20dp"
-                    android:text="@string/settings_section_diag"
+                    android:text="@string/settings_section_migrate"
                     android:textAppearance="@style/EmojiChan.SectionLabel" />
 
                 <com.google.android.material.card.MaterialCardView
@@ -843,7 +939,128 @@
                     app:strokeWidth="1dp">
 
                     <LinearLayout
-                        android:id="@+id/rowLog"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:paddingTop="14dp"
+                        android:paddingBottom="14dp">
+
+                        <TextView
+                            android:id="@+id/migrateHint"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:paddingHorizontal="14dp"
+                            android:text="@string/settings_migrate_hint"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <LinearLayout
+                            android:id="@+id/rowExport"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_export_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:text="@string/settings_export_sub"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="›"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="18sp" />
+                        </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:background="@color/divider" />
+
+                        <LinearLayout
+                            android:id="@+id/rowImport"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp"
+                            android:paddingVertical="12dp">
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/settings_import_title"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="15sp" />
+
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:text="@string/settings_import_sub"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="›"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="18sp" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/settings_section_advanced"
+                    android:textAppearance="@style/EmojiChan.SectionLabel" />
+
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    app:cardBackgroundColor="@color/surface"
+                    app:cardCornerRadius="18dp"
+                    app:cardElevation="0dp"
+                    app:strokeColor="@color/divider"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:id="@+id/rowAdvanced"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:background="?attr/selectableItemBackground"
@@ -861,7 +1078,7 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="@string/settings_log_title"
+                                android:text="@string/settings_advanced_title"
                                 android:textColor="@color/text_primary"
                                 android:textSize="15sp" />
 
@@ -869,7 +1086,7 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="2dp"
-                                android:text="@string/settings_log_sub"
+                                android:text="@string/settings_advanced_sub"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="12sp" />
                         </LinearLayout>
@@ -881,7 +1098,6 @@
                             android:textColor="@color/text_secondary"
                             android:textSize="18sp" />
                     </LinearLayout>
-
                 </com.google.android.material.card.MaterialCardView>
 
                 <TextView
@@ -903,20 +1119,21 @@
                     app:strokeWidth="1dp">
 
                     <LinearLayout
+                        android:id="@+id/rowVersion"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:background="?attr/selectableItemBackground"
                         android:gravity="center_vertical"
                         android:orientation="horizontal"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="12dp">
 
-                        <TextView
+                        <!-- 行首就是应用图标本身：点这一行进的是版本页。 -->
+                        <ImageView
                             android:layout_width="40dp"
                             android:layout_height="40dp"
-                            android:background="@drawable/bg_icon_chip"
-                            android:gravity="center"
-                            android:text="ℹ"
-                            android:textSize="18sp" />
+                            android:contentDescription="@null"
+                            android:src="@mipmap/ic_launcher" />
 
                         <LinearLayout
                             android:layout_width="0dp"
@@ -939,9 +1156,17 @@
                                 android:layout_marginTop="2dp"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="12sp" />
-                    </LinearLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_row_more"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="18sp" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
+
             </LinearLayout>
         </ScrollView>
     </FrameLayout>
@@ -951,6 +1176,11 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@color/surface"
-        app:labelVisibilityMode="labeled"
+        android:minHeight="48dp"
+        app:itemActiveIndicatorStyle="@style/EmojiChan.NavIndicator"
+        app:itemIconTint="@color/nav_icon_tint"
+        app:itemPaddingBottom="6dp"
+        app:itemPaddingTop="6dp"
+        app:labelVisibilityMode="unlabeled"
         app:menu="@menu/menu_bottom" />
                     </LinearLayout>

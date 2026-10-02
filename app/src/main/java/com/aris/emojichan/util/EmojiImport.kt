@@ -40,7 +40,7 @@ object EmojiImport {
             emoji = EmojiEntity(
                 name = baseName,
                 filePath = filePath,
-                fileType = if (ImageUtil.isGif(filePath)) "gif" else "image",
+                fileType = ImageTypes.fileTypeOf(filePath),
                 fileSize = ImageUtil.getFileSize(filePath),
                 width = width,
                 height = height

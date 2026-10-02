@@ -20,6 +20,7 @@ import android.widget.Toast
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiRepository
+import com.aris.emojichan.util.ImageTypes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -238,7 +239,7 @@ class FloatingBallService : Service() {
     }
 
     /**
-     * 球的四种长相：默认（扁平猫脸，就是应用图标那张）、原图标（像素猫）、
+     * 球的四种长相：默认（扁平猫脸，就是应用图标那张）、游戏开发部（像素猫）、
      * 纯色表情球、用户自己挑的图。
      * 自定义图不在（清了数据、换了手机）就退回默认图案，不给用户看一个空白球。
      */
@@ -570,7 +571,9 @@ class FloatingBallService : Service() {
      * 宁可让用户多点一下，也不能让他把别人的图发出去。
      */
     private suspend fun sendViaAlbum(emoji: EmojiEntity): Boolean {
-        val mime = if (emoji.fileType.equals("gif", ignoreCase = true)) "image/gif" else "image/*"
+        // 以前非 gif 一律报 image/*，相册发布那边只好兜底写成 image/png —— webp / jpg 的类型
+        // 就这么被写错了。现在按扩展名报准。
+        val mime = ImageTypes.mimeOf(emoji.filePath)
         val slot = AlbumPublish.publish(this, emoji.filePath, mime)
         if (slot == null) {
             showHint(getString(R.string.overlay_album_failed))

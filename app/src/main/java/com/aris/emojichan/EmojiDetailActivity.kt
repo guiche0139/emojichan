@@ -1,33 +1,42 @@
 package com.aris.emojichan
 
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.bumptech.glide.Glide
-import com.bumptech.glide.load.resource.bitmap.CenterCrop
 import com.bumptech.glide.load.resource.bitmap.RoundedCorners
 import com.aris.emojichan.data.EmojiDefaults
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.TagEntity
 import com.aris.emojichan.sender.EmojiShare
+import com.aris.emojichan.storage.ExportTarget
+import com.aris.emojichan.storage.ImageExporter
+import com.aris.emojichan.util.ImageFit
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 表情详情页。
@@ -45,10 +54,18 @@ class EmojiDetailActivity : AppCompatActivity() {
     private lateinit var viewModel: EmojiViewModel
     private lateinit var toolbar: MaterialToolbar
     private lateinit var emojiImage: ImageView
+    private lateinit var imageArea: FrameLayout
     private lateinit var emojiName: TextView
+
+    /**
+     * 已经按哪张图算过尺寸了（`路径@可用长边`）。数据库每次回灌都会重跑一遍 [displayEmojiInfo]，
+     * 没有这个记号就会反复去解文件头。
+     */
+    private var imageSizeKey: String? = null
     private lateinit var emojiInfo: TextView
     private lateinit var btnFavorite: Button
     private lateinit var btnCopy: Button
+    private lateinit var btnExport: Button
     private lateinit var btnRename: Button
     private lateinit var btnDelete: Button
     private lateinit var tagContainer: ChipGroup
@@ -62,6 +79,11 @@ class EmojiDetailActivity : AppCompatActivity() {
     private var currentEmoji: EmojiEntity? = null
 
     private val emojiId: Long by lazy { intent.getLongExtra(EXTRA_EMOJI_ID, 0L) }
+
+    /** 单张导出：交给系统的「保存到…」，只把文件复制出去，库里这张不动。 */
+    private val exportPicker = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("image/*")
+    ) { uri -> if (uri != null) runExportImage(uri) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,10 +110,21 @@ class EmojiDetailActivity : AppCompatActivity() {
     private fun initViews() {
         toolbar = findViewById(R.id.toolbar)
         emojiImage = findViewById(R.id.emojiImageView)
+        imageArea = findViewById(R.id.detailImageArea)
         emojiName = findViewById(R.id.emojiName)
+
+        // 可用高度是布局给的：第一次排版完、以及旋转 / 分屏 / 主题变化重新排版时都要重量一次。
+        imageArea.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+            val width = view.width - view.paddingStart - view.paddingEnd
+            val height = view.height - view.paddingTop - view.paddingBottom
+            if (width <= 0 || height <= 0) return@addOnLayoutChangeListener
+            val emoji = currentEmoji ?: return@addOnLayoutChangeListener
+            if (!imageSizeKey.orEmpty().endsWith("${width}x${height}")) renderImage(emoji)
+        }
         emojiInfo = findViewById(R.id.emojiInfo)
         btnFavorite = findViewById(R.id.btnFavorite)
         btnCopy = findViewById(R.id.btnCopy)
+        btnExport = findViewById(R.id.btnExport)
         btnRename = findViewById(R.id.btnRename)
         btnDelete = findViewById(R.id.btnDelete)
         tagContainer = findViewById(R.id.tagContainer)
@@ -132,12 +165,7 @@ class EmojiDetailActivity : AppCompatActivity() {
     }
 
     private fun displayEmojiInfo(emoji: EmojiEntity) {
-        Glide.with(this)
-            .load(File(emoji.filePath))
-            .transform(CenterCrop(), RoundedCorners(16))
-            .placeholder(R.drawable.ic_emoji_placeholder)
-            .error(R.drawable.ic_emoji_placeholder)
-            .into(emojiImage)
+        renderImage(emoji)
 
         emojiName.text = emoji.name
 
@@ -165,6 +193,67 @@ class EmojiDetailActivity : AppCompatActivity() {
         updateFavoriteButton(emoji.isFavorite)
     }
 
+    /**
+     * 按图片自己的长宽比给卡片算尺寸（v0.1.409 起，用户 m08399 第 3 条）：
+     *
+     *  · 先拿到图片原始宽高（数据库里有就直接用，没有再解一次文件头 —— 只读尺寸，不把整张图读进内存）；
+     *  · 可用区域是上面那块「剩下的高度」，竖图吃高度、横图吃宽度、正方形取小的那一边；
+     *  · 小图不放大，大图缩到刚好塞得进去：任何一张都整张可见，也不再被裁；
+     *  · 卡片自己长自己缩（wrap_content），图片就那么大，四周不会剩一大片空白。
+     *
+     * 尺寸只在「换了图」或「可用区域变了」（旋转、分屏、切日夜）时重算，其余刷新复用现成尺寸；
+     * 具体算式在 [ImageFit] 里（纯函数，带单测），这里只负责把量到的数喂进去。
+     */
+    private fun renderImage(emoji: EmojiEntity) {
+        val areaWidth = imageArea.width - imageArea.paddingStart - imageArea.paddingEnd
+        val areaHeight = imageArea.height - imageArea.paddingTop - imageArea.paddingBottom
+        if (areaWidth <= 0 || areaHeight <= 0) return  // 还没排完版，等布局监听回来再算
+
+        val sizeKey = "${emoji.filePath}@${areaWidth}x${areaHeight}"
+        if (sizeKey != imageSizeKey) {
+            val bounds = imageBounds(emoji)
+            val (boxWidth, boxHeight) = ImageFit.fit(
+                srcWidth = bounds?.first ?: 0,
+                srcHeight = bounds?.second ?: 0,
+                maxWidth = areaWidth,
+                maxHeight = areaHeight,
+                minSide = dp(48f),
+                inset = dp(12f)   // 跟布局里 ImageView 的 padding 对齐，图不贴边
+            )
+            imageSizeKey = sizeKey
+            emojiImage.layoutParams = emojiImage.layoutParams.apply {
+                width = boxWidth
+                height = boxHeight
+            }
+        }
+
+        Glide.with(this)
+            .load(File(emoji.filePath))
+            .override(emojiImage.layoutParams.width, emojiImage.layoutParams.height)
+            .transform(RoundedCorners(16))
+            .placeholder(R.drawable.ic_emoji_placeholder)
+            .error(R.drawable.ic_emoji_placeholder)
+            .into(emojiImage)
+    }
+
+    /** 图片原始宽高；读不出来（文件已经不在 / 认不出的格式）返回 null，这时按正方形摆。 */
+    private fun imageBounds(emoji: EmojiEntity): Pair<Int, Int>? {
+        if (emoji.width > 0 && emoji.height > 0) return emoji.width to emoji.height
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        return try {
+            BitmapFactory.decodeFile(emoji.filePath, options)
+            if (options.outWidth > 0 && options.outHeight > 0) {
+                options.outWidth to options.outHeight
+            } else {
+                null
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun dp(value: Float): Int = (value * resources.displayMetrics.density).roundToInt()
+
     private fun updateFavoriteButton(isFavorite: Boolean) {
         btnFavorite.text = getString(if (isFavorite) R.string.btn_unfavorite else R.string.btn_favorite)
     }
@@ -177,6 +266,8 @@ class EmojiDetailActivity : AppCompatActivity() {
         }
 
         btnCopy.setOnClickListener { copyToClipboard() }
+
+        btnExport.setOnClickListener { askExportImage() }
 
         btnRename.setOnClickListener {
             showRenameDialog()
@@ -211,6 +302,36 @@ class EmojiDetailActivity : AppCompatActivity() {
             getString(R.string.copy_fail_toast)
         }
         Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * 导出这一张：复制文件，不动库里的原图，也不改数据库。
+     * 建议名用表情名 + 原扩展名，重名让系统自己加序号。
+     */
+    private fun askExportImage() {
+        val emoji = currentEmoji ?: return
+        if (!File(emoji.filePath).isFile) {
+            Toast.makeText(this, R.string.detail_export_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        exportPicker.launch(ImageExporter.displayName(ExportTarget(emoji.name, emoji.filePath)))
+    }
+
+    private fun runExportImage(target: Uri) {
+        val emoji = currentEmoji ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val out = contentResolver.openOutputStream(target, "w") ?: return@runCatching false
+                    out.use { stream ->
+                        File(emoji.filePath).inputStream().use { input -> input.copyTo(stream) }
+                    }
+                    true
+                }.getOrDefault(false)
+            }
+            val text = if (ok) R.string.detail_export_done else R.string.detail_export_failed
+            Toast.makeText(this@EmojiDetailActivity, text, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showRenameDialog() {

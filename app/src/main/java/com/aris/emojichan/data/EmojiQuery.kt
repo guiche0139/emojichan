@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteQuery
  * 把 [EmojiFilter] 拼成一条 SQL。
  *
  * 用 RawQuery 手工拼 WHERE，而不是给每种组合写一个 @Query：条件是组合出来的
- * （收藏 × 关键词模式 × 标签集合 × AND/OR），穷举要写十几份几乎一样的 SQL。
+ * （收藏 × 搜索条件 × 标签集合 × AND/OR），穷举要写十几份几乎一样的 SQL。
  * 拼接的只有占位符与常量，用户输入一律走参数绑定。
  */
 object EmojiQuery {
@@ -26,28 +26,26 @@ object EmojiQuery {
             sql.append(" AND isFavorite = 1")
         }
 
-        val keyword = filter.keyword.trim()
-        if (keyword.isNotEmpty()) {
-            val pattern = "%" + escapeLike(keyword) + "%"
-            when (filter.searchMode) {
-                SearchMode.NAME -> {
-                    // 名字命中，或者挂着名字命中的标签
-                    sql.append(" AND (name LIKE ?" + LIKE_ESCAPE)
-                    sql.append(" OR id IN (SELECT l.emojiId FROM emoji_tags l")
-                    sql.append(" INNER JOIN tags t ON t.id = l.tagId WHERE t.name LIKE ?" + LIKE_ESCAPE + "))")
-                    args.add(pattern)
-                    args.add(pattern)
+        // 搜索条件：组内 AND，组间 OR（& 先算、/ 后算）
+        val groups = filter.expr?.groups?.filter { it.isNotEmpty() }.orEmpty()
+        if (groups.isNotEmpty()) {
+            sql.append(" AND (")
+            groups.forEachIndexed { index, group ->
+                if (index > 0) sql.append(" OR ")
+                sql.append("(")
+                group.forEachIndexed { termIndex, term ->
+                    if (termIndex > 0) sql.append(" AND ")
+                    sql.append(termSql(term, args))
                 }
-                SearchMode.TAG -> {
-                    sql.append(" AND id IN (SELECT l.emojiId FROM emoji_tags l")
-                    sql.append(" INNER JOIN tags t ON t.id = l.tagId WHERE t.name LIKE ?" + LIKE_ESCAPE + ")")
-                    args.add(pattern)
-                }
+                sql.append(")")
             }
+            sql.append(")")
         }
 
-        // 已经用 $TAG: 在搜某个标签时，再叠标签 chip 只会撞出空结果
-        if (filter.tagIds.isNotEmpty() && filter.searchMode != SearchMode.TAG) {
+        // 表达式里已经写了标签条件（$…$）时，面板上的标签 chip 不参与：两者是 AND 关系，
+        // 叠起来多半只会撞出空结果（$TAG:猫$ 再配一个「狗」chip），用户看到的是莫名其妙的空白。
+        val exprHasTag = groups.any { group -> group.any { it is SearchTerm.Tag } }
+        if (filter.tagIds.isNotEmpty() && !exprHasTag) {
             val ids = filter.tagIds.distinct().take(MAX_TAG_IDS)
             val holders = ids.joinToString(", ") { "?" }
             if (filter.tagMatchAll) {
@@ -67,6 +65,29 @@ object EmojiQuery {
 
         sql.append(" ORDER BY createTime DESC")
         return SimpleSQLiteQuery(sql.toString(), args.toTypedArray())
+    }
+
+    /** 一项条件对应的 SQL 片段；用到的参数就地塞进 [args]。 */
+    private fun termSql(term: SearchTerm, args: MutableList<Any?>): String {
+        val pattern = "%" + escapeLike(term.text.trim()) + "%"
+        return when (term) {
+            is SearchTerm.Name -> {
+                args.add(pattern)
+                "name LIKE ?$LIKE_ESCAPE"
+            }
+            is SearchTerm.Tag -> {
+                args.add(pattern)
+                "id IN (SELECT l.emojiId FROM emoji_tags l" +
+                    " INNER JOIN tags t ON t.id = l.tagId WHERE t.name LIKE ?$LIKE_ESCAPE)"
+            }
+            is SearchTerm.Keyword -> {
+                // 名字命中，或者挂着名字命中的标签
+                args.add(pattern)
+                args.add(pattern)
+                "(name LIKE ?$LIKE_ESCAPE OR id IN (SELECT l.emojiId FROM emoji_tags l" +
+                    " INNER JOIN tags t ON t.id = l.tagId WHERE t.name LIKE ?$LIKE_ESCAPE))"
+            }
+        }
     }
 
     /**

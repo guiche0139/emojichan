@@ -16,7 +16,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 迁移测试：v2 → v3（「分类」改成「包 + 标签」）与 v3 → v4（彻底删掉「包」）。
+ * 迁移测试：v2 → v3（「分类」改成「包 + 标签」）、v3 → v4（彻底删掉「包」）
+ * 与 v4 → v5（新增内容指纹表）。
  *
  * 不走 Room 的 identity hash 校验：手工用 SupportSQLiteOpenHelper 按 v2 的建表语句
  * 造一个版本号为 2 的库、塞进数据，然后直接调 [EmojiDatabase.MIGRATION_2_3] 的 migrate。
@@ -286,5 +287,100 @@ class EmojiDatabaseMigrationTest {
         assertTrue(indexExists(db, "index_tags_name"))
         assertTrue(indexExists(db, "index_emoji_tags_emojiId"))
         assertTrue(indexExists(db, "index_emoji_tags_tagId"))
+    }
+
+    // ---------- v4 → v5：新增内容指纹（重复检索） ----------
+
+    /** 造一个 v4 库：先按 v3 建库塞数据，再跑一遍 v3→v4（v4 的列清单由迁移本身造出来，不手抄）。 */
+    private fun openV4WithData(): SupportSQLiteDatabase {
+        val db = openV3WithData()
+        EmojiDatabase.MIGRATION_3_4.migrate(db)
+        return db
+    }
+
+    /** 读一段 PRAGMA 的某一列（SupportSQLiteDatabase.query 直接吃 PRAGMA 语句）。 */
+    private fun pragma(db: SupportSQLiteDatabase, sql: String, column: String): List<String> {
+        val values = mutableListOf<String>()
+        db.query(sql).use { cursor ->
+            while (cursor.moveToNext()) {
+                values += cursor.getString(cursor.getColumnIndexOrThrow(column))
+            }
+        }
+        return values
+    }
+
+    /** PRAGMA table_info 里主键那一列（pk > 0）的列名，按声明顺序。 */
+    private fun primaryKeysOf(db: SupportSQLiteDatabase, table: String): List<String> {
+        val names = mutableListOf<String>()
+        db.query("PRAGMA table_info($table)").use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            val pkIndex = cursor.getColumnIndexOrThrow("pk")
+            while (cursor.moveToNext()) {
+                if (cursor.getInt(pkIndex) > 0) names += cursor.getString(nameIndex)
+            }
+        }
+        return names
+    }
+
+    /**
+     * v4 → v5 是纯新增：多一张 image_features，老数据一行都不能动。
+     *
+     * 这一版没有列被改，所以表名、列名、外键、索引必须和 Room 期望的结构一字不差 ——
+     * 对不上不是迁移当场报错，而是装上新版本第一次打开数据库时抛「migration didn't
+     * properly handle」把应用挡在门外。所以这里把 Room 会校验的东西全验一遍。
+     */
+    @Test
+    fun migrationAddsImageFeatureTable() {
+        val db = openV4WithData()
+
+        EmojiDatabase.MIGRATION_4_5.migrate(db)
+
+        assertTrue(tableExists(db, "image_features"))
+        assertEquals(
+            setOf("emojiId", "bytes", "modifiedAt", "sha256", "dhash", "computedAt"),
+            columnsOf(db, "image_features").toSet()
+        )
+        assertEquals(listOf("emojiId"), primaryKeysOf(db, "image_features"))
+        // 两项指纹都可空：哪个页面先跑就先算哪一项（sha256 服务「完全相同」，dhash 服务「相似」）。
+        // 顺序就是实体里的声明顺序，Room 校验时只认列名与可空性，不认顺序。
+        assertEquals(
+            listOf("1", "1", "1", "0", "0", "1"),
+            pragma(db, "PRAGMA table_info(image_features)", "notnull")
+        )
+
+        // 外键挂在 emojis 上，表情记录被删时指纹跟着走
+        assertEquals(listOf("emojis"), pragma(db, "PRAGMA foreign_key_list(image_features)", "table"))
+        assertEquals(listOf("emojiId"), pragma(db, "PRAGMA foreign_key_list(image_features)", "from"))
+        assertEquals(listOf("id"), pragma(db, "PRAGMA foreign_key_list(image_features)", "to"))
+        assertEquals(
+            listOf("CASCADE"),
+            pragma(db, "PRAGMA foreign_key_list(image_features)", "on_delete")
+        )
+        assertEquals(
+            listOf("NO ACTION"),
+            pragma(db, "PRAGMA foreign_key_list(image_features)", "on_update")
+        )
+
+        // 两个索引，都不是唯一索引，列名与实体里写的一致
+        assertTrue(indexExists(db, "index_image_features_emojiId"))
+        assertTrue(indexExists(db, "index_image_features_sha256"))
+        assertEquals(
+            listOf("0", "0"),
+            pragma(db, "PRAGMA index_list(image_features)", "unique")
+        )
+        assertEquals(
+            listOf("emojiId"),
+            pragma(db, "PRAGMA index_info(index_image_features_emojiId)", "name")
+        )
+        assertEquals(
+            listOf("sha256"),
+            pragma(db, "PRAGMA index_info(index_image_features_sha256)", "name")
+        )
+
+        // 老数据一行不少，新表是空的
+        assertEquals(2, count(db, "emojis"))
+        assertEquals(2, count(db, "tags"))
+        assertEquals(2, count(db, "emoji_tags"))
+        assertEquals(0, count(db, "image_features"))
     }
 }

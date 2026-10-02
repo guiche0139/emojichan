@@ -7,7 +7,15 @@
     <string name="tag_panel_title">标签</string>
     <string name="tag_panel_empty">暂无标签</string>
     <string name="tag_rename_title">重命名标签</string>
-    <string name="search_hint_tag">按标签搜索（$TAG:标签名）</string>
+    <!-- 搜索语法（v0.1.403）：写法与快捷键的文案 -->
+    <string name="search_syntax_tag">标签</string>
+    <string name="search_syntax_keyword">关键词</string>
+    <string name="search_syntax_and">和</string>
+    <string name="search_syntax_or">或</string>
+    <string name="search_syntax_help">用法</string>
+    <string name="search_syntax_title">搜索用法</string>
+    <string name="search_syntax_message">标签名：$TAG=标签名$，也可以只写 $标签名$\n表情名：@关键词@\n不带符号的词：表情名和标签名都算\n\n&amp; 表示同时满足，/ 表示任一满足（先算 &amp; 再算 /）。\n例：$TAG=猫$ &amp; @生气@ / $TAG=狗$ 表示「挂着猫标签、名字里有生气」或者「挂着狗标签」。\n\n输入 $ 时会给出标签候选，点一下补全。</string>
+    <string name="search_suggest_tag">标签：%1$s</string>
     <string name="tab_all">全部</string>
     <string name="tab_favorites">收藏</string>
 
@@ -17,7 +25,7 @@
     <string name="btn_export">导出</string>
     <string name="btn_rename">重命名</string>
     <string name="btn_select_all">全选</string>
-    <string name="btn_cancel_select">取消选择</string>
+    <string name="btn_cancel_select">取消</string>
     <string name="btn_delete_count">删除 (%1$d)</string>
 
     <!-- 标签（原来分「包」和「标签」两套，现在只剩标签） -->
@@ -50,7 +58,7 @@
     <string name="import_source_files">从文件导入（文件名与原文件一致）</string>
     <string name="import_source_folder">从文件夹导入（按文件夹名打标签）</string>
     <string name="import_folder_progress_title">正在导入文件夹</string>
-    <string name="import_folder_progress_message">导入过程中请不要退出应用。</string>
+    <string name="import_folder_progress_message">导入过程中退出应用会中断导入。</string>
     <string name="import_folder_result">已从文件夹导入 %1$d 张</string>
     <string name="import_folder_empty">文件夹里没有图片</string>
     <string name="import_folder_unreadable">无法打开这个文件夹</string>
@@ -168,12 +176,21 @@
     <string name="copy_fail_toast">复制失败：图片文件不存在，详情见「发送日志」</string>
 
     <!-- 诊断：剪贴板取证（文件字节 / 系统剪贴板 / 接收方能取到什么） -->
-    <string name="log_clip_check">剪贴板自检</string>
-    <string name="log_clip_checked">剪贴板信息已写入日志</string>
+    <string name="log_export">导出 TXT</string>
+    <string name="log_export_done">已导出</string>
+    <string name="log_export_failed">导出失败：%1$s</string>
+    <string name="log_error_logs">错误日志（%1$d 份）…</string>
+    <string name="log_error_files_title">错误日志（%1$d 份，最近的在最上面）</string>
+    <string name="log_error_count">错误 %1$d 条</string>
+    <string name="log_error_empty">还没有错误日志</string>
+
 
     <!-- 主界面 · 底部两页 + 设置页 -->
     <string name="tab_emoji">表情</string>
     <string name="tab_settings">设置</string>
+    <!-- 主界面标题行最右边的自动发送状态（圆点 + 两行小字），点它去系统无障碍设置 -->
+    <string name="a11y_indicator_title">无障碍</string>
+    <string name="a11y_indicator_sub">自动发送功能</string>
     <string name="settings_section_send">发送</string>
     <string name="settings_section_route">表情发送方式</string>
     <string name="settings_section_diag">诊断</string>
@@ -235,8 +252,18 @@
 
     <string name="settings_version_title">版本</string>
     <string name="settings_version_sub">v%1$s · 覆盖安装新版本，表情数据保留</string>
+    <!-- 版本页下面的 GitHub 入口：应用不联网，这里只是把人送到发布页，下载由浏览器完成。 -->
+    <string name="settings_github_title">GitHub</string>
+    <string name="settings_github_sub">去发布页看看有没有新版本</string>
+    <string name="settings_update_title">检查更新</string>
+    <string name="settings_update_message">当前 v%1$s。\n\n本应用不申请网络权限，查不到线上是哪个版本。打开发布页比一下版本号，有新版本就下载安装。\n\n覆盖安装不会丢数据（前提是签名一致）。</string>
+    <string name="settings_update_open">打开发布页</string>
+    <string name="settings_update_copy">复制链接</string>
+    <string name="settings_update_copied">发布页链接已复制</string>
+    <string name="settings_update_no_browser">没找到可用的浏览器，链接：%1$s</string>
+    <!-- 地址别改成 /releases/latest：它只认「正式发布」，本仓库全是 prerelease，实测返回 404。 -->
+    <string name="settings_update_url" translatable="false">https://github.com/guiche0139/emojichan/releases</string>
 
-    <string name="banner_a11y_off">自动发送服务未开启 · 点此开启</string>
     <string name="page_settings_title">设置</string>
 
     <!-- ==================== UI 设置 ==================== -->
@@ -253,8 +280,8 @@
     <string name="night_follow">跟随系统</string>
     <string name="night_light">浅色</string>
     <string name="night_dark">深色</string>
-    <string name="ball_style_default">新图标（扁平猫脸）</string>
-    <string name="ball_style_classic">原图标（像素猫）</string>
+    <string name="ball_style_default">默认</string>
+    <string name="ball_style_classic">游戏开发部</string>
     <string name="ball_style_dot">纯色表情球</string>
     <string name="ball_style_custom">自定义图片</string>
     <string name="ball_pick">从相册选一张…</string>
@@ -291,4 +318,290 @@
     <string name="tag_remove_from_emoji">从这张表情上移除标签「%1$s」？表情本身不受影响。</string>
     <string name="tag_auto_locked">「图片」「动图」是导入时按文件类型自动添加的标签，不能修改或删除。</string>
     <string name="tag_auto_locked_toast">「图片」「动图」为自动标签，不能修改或删除</string>
+    <!-- ==================== 高级设置 / 表情库迁移（v0.1.402） ==================== -->
+    <string name="settings_section_advanced">高级</string>
+    <string name="settings_advanced_title">高级设置</string>
+    <string name="settings_advanced_sub">表情库迁移、发送方式、发送日志</string>
+    <string name="settings_section_migrate">表情库迁移</string>
+    <string name="settings_migrate_hint">导出包里带全部表情图片、标签和收藏信息，换手机时导入即可复原。</string>
+    <string name="settings_export_title">导出表情库</string>
+    <string name="settings_export_sub">打成一个 .emcpack 包，自行选择保存位置</string>
+    <string name="settings_import_title">导入表情库</string>
+    <string name="settings_import_sub">从 .emcpack 包恢复，旧版导出的 .zip 包也能用；可以覆盖，也可以添加到现有库</string>
+
+    <string name="archive_export_progress_title">正在导出</string>
+    <string name="archive_export_progress">第 %1$d / %2$d 张…</string>
+    <string name="archive_export_empty">库里还没有表情，没有可导出的内容。</string>
+    <string name="archive_export_done">已导出 %1$d 张表情、%2$d 个标签（%3$s）</string>
+    <string name="archive_export_done_missing">\n\n其中 %1$d 张的图片文件已经找不到了，没有进包。</string>
+    <string name="archive_export_failed">导出失败：%1$s</string>
+
+    <string name="archive_import_mode_title">怎么导入</string>
+    <string name="archive_import_merge">添加：和现有库合并，重复的跳过</string>
+    <string name="archive_import_replace">覆盖：清空当前库，只留包里的内容</string>
+    <string name="archive_import_progress_title">正在导入</string>
+    <string name="archive_import_progress">第 %1$d / %2$d 张…</string>
+    <string name="archive_import_replace_title">确认覆盖</string>
+    <string name="archive_import_replace_message">当前库里有 %1$d 张表情，覆盖后会连同标签和收藏一起删掉，只保留这个包里的内容。\n\n确定继续吗？</string>
+    <string name="archive_import_done">已导入 %1$d 张表情、%2$d 个标签</string>
+    <string name="archive_import_done_skipped">，跳过重复的 %1$d 张</string>
+    <string name="archive_import_done_failed">，%1$d 张读不出来</string>
+    <string name="archive_import_failed">导入失败：%1$s</string>
+    <string name="archive_err_not_archive">这不是本应用导出的备份包（里面没有清单文件）</string>
+    <string name="archive_err_broken">备份包读不了：里面的清单文件坏了</string>
+    <string name="archive_err_unreadable">打不开这个文件：可能已经被删掉，或者没有读取权限</string>
+    <string name="archive_err_io">出错了：%1$s</string>
+    <string name="archive_err_generic">出错了，再试一次</string>
+
+    <!-- ==================== 表情原文件怎么处理（v0.1.402） ==================== -->
+    <string name="settings_section_source">表情原文件</string>
+    <string name="settings_source_title">导入后的原文件怎么办</string>
+    <string name="source_keep">保留</string>
+    <string name="source_zip">压缩成 zip</string>
+    <string name="source_delete">删除</string>
+    <string name="settings_source_hint_keep">保留（默认）：导入只是把图片复制一份进来，相册里的原文件不会改动。</string>
+    <string name="settings_source_hint_zip">压缩：把这次导入选中的原文件先收进一个 zip 包，存到指定目录，再从原处删除。只处理这次选中的文件，其它文件不动。</string>
+    <string name="settings_source_hint_delete">删除：导入成功后直接删除这次导入选中的原文件，删除后无法找回。只处理这次选中的文件，其它文件不动。</string>
+    <string name="settings_source_dir_title">zip 存到哪个目录</string>
+    <string name="settings_source_dir_none">还没选，点这里挑一个文件夹</string>
+    <string name="settings_source_hint_note">zip 只是把原图收拢成一个包：jpg / png / gif 已经压过一遍，打包后体积几乎不会变小。</string>
+    <string name="source_zip_need_dir">先挑一个存放 zip 的文件夹</string>
+    <string name="source_enable_delete_title">打开「删除原文件」？</string>
+    <string name="source_enable_delete_message">打开后，每次导入成功都会删除这次导入选中的原文件（相册里的原图），删除后无法找回。\n\n程序只删除这一次导入时选中的文件，不扫描相册，也不改动其它文件。\n\n「压缩成 zip」会先把文件收进压缩包再删除，比这一项多留一份备份。</string>
+    <string name="source_enable_ok">我明白，打开</string>
+    <string name="source_zip_title">正在压缩原文件</string>
+    <string name="source_zip_failed">压缩包没写成，原文件保持不动</string>
+    <string name="source_zip_done">原文件已收进「%1$s」</string>
+    <string name="source_delete_title">删除原文件？</string>
+    <string name="source_delete_message">导入成功，接下来删除这次导入选中的 %1$d 个原文件。系统会再确认一次。</string>
+    <string name="source_delete_done">已删除 %1$d 个原文件</string>
+    <string name="source_delete_skipped">还有 %1$d 个原文件没能删掉（这个来源不支持自动删除），请手动处理</string>
+    <string name="source_delete_denied">已取消，原文件保持不动</string>
+
+    <!-- ==================== 大表情压缩 · 编码方式（v0.1.408） ==================== -->
+    <string name="settings_section_compress">大表情压缩</string>
+    <string name="settings_compress_title">压缩方式</string>
+    <string name="settings_compress_lossy">有损（质量 80）</string>
+    <string name="settings_compress_lossless">无损</string>
+    <string name="settings_compress_hint_lossy">按原尺寸重新编码成有损 WebP（质量 80）。体积降得最多，画质有轻微损失。</string>
+    <string name="settings_compress_hint_lossless">按原尺寸重新编码成无损 WebP，逐像素和原图一致。压出来常常比原图还大，这种情况会跳过，原图不动。</string>
+    <string name="settings_compress_hint_lossless_png">按原尺寸重新编码成无损 PNG（这台系统的 Android 版本没有无损 WebP 编码器）。逐像素和原图一致，压出来常常比原图还大，这种情况会跳过，原图不动。</string>
+    <string name="settings_compress_note">两种都不改分辨率，只换编码方式；只有确实变小才会替换，替换前会先显示结果。</string>
+    <string name="compress_switched_lossy">压缩方式已改为：有损 WebP（质量 80）</string>
+    <string name="compress_switched_lossless">压缩方式已改为：无损</string>
+    <string name="settings_compress_anim_title">压缩页里的动图</string>
+    <string name="settings_compress_anim_hide">隐藏</string>
+    <string name="settings_compress_anim_show">显示</string>
+    <string name="settings_compress_anim_hint_hidden">压缩页不列出动图（GIF / 动态 WebP）。它们不参与压缩。</string>
+    <string name="settings_compress_anim_hint_shown">压缩页也把动图列出来，标上「动图」，但不能勾选。可用来确认某张动图是否还在库里。</string>
+    <string name="compress_switched_anim_hidden">压缩页不再列出动图</string>
+    <string name="compress_switched_anim_shown">压缩页会列出动图（不可勾选）</string>
+
+    <!-- ============ 重复与相似检索的底线（v0.1.412 用户 m08998；v0.1.413 用户 m09083 改成相似度百分比） ============ -->
+    <string name="settings_section_search">重复与相似检索</string>
+    <string name="settings_search_title">画面相近判定的底线</string>
+    <string name="settings_search_line_4" formatted="false">相似度 94% 及以上</string>
+    <string name="settings_search_line_8" formatted="false">相似度 88% 及以上</string>
+    <string name="settings_search_line_12" formatted="false">相似度 81% 及以上</string>
+    <string name="settings_search_hint_4" formatted="false">最紧的一档：相似度 94% 及以上（64 位里至少 60 位一样）才归为一组。同一张图经过缩放、压缩或格式转换后仍在这档以内。</string>
+    <string name="settings_search_hint_8" formatted="false">默认：相似度 88% 及以上（64 位里至少 56 位一样）归为一组。同一张图的不同版本大多落在这一档。</string>
+    <string name="settings_search_hint_12" formatted="false">最松的一档：相似度 81% 及以上（64 位里至少 52 位一样）也归为一组。画面相近但内容不同的图会出现在结果里，删除前需逐组确认。</string>
+    <string name="settings_search_note">只影响「重复与相似检索」里「画面相近」那一段：相似度在底线以上的才列出，组内相似度高的排在前面。</string>
+    <string name="search_line_switched">画面相近判定的底线已改为：相似度 %1$d%% 及以上</string>
+
+    <!-- ==================== 高危二次确认（v0.1.402） ==================== -->
+    <string name="confirm_auto_send_title">打开自动发送？</string>
+    <string name="confirm_auto_send_message">打开后，发送表情的最后一步（微信「发送」/ QQ「确定」）由程序自动点击，过程不再需要手动确认。\n\n关闭时，流程停在按钮前，需要手动点击。</string>
+    <string name="confirm_auto_send_ok">打开</string>
+    <string name="confirm_auto_send_cancel">保持关闭</string>
+
+    <!-- ==================== 存储管理（v0.1.406） ==================== -->
+    <string name="settings_section_storage">存储</string>
+    <string name="settings_storage_title">存储管理</string>
+    <string name="settings_storage_sub">占用空间、压缩大图</string>
+    <string name="storage_title">存储管理</string>
+    <string name="storage_loading">正在统计…</string>
+    <string name="storage_overview_title">存储概览</string>
+    <string name="storage_overview_total">表情 %1$d 张 · 合计 %2$s</string>
+    <string name="storage_overview_by_format">按文件格式</string>
+    <string name="storage_legend_meta">%1$d 张 · %2$s</string>
+    <string name="storage_legend_percent">%1$d%%</string>
+    <string name="storage_missing_note">其中 %1$d 张的图片文件已经不在磁盘上，这部分不计入占用。</string>
+    <string name="storage_other_title">其它数据</string>
+    <string name="storage_other_database">数据库</string>
+    <string name="storage_other_cache">缓存（缩略图等）</string>
+    <string name="storage_total">总共占用 %1$s</string>
+    <string name="storage_empty_library">库里还没有表情。</string>
+    <string name="storage_tools_title">工具</string>
+    <string name="storage_tool_compress_title">大表情压缩</string>
+    <string name="storage_tool_compress_sub">按体积分段列出，可逐张或批量压缩</string>
+    <string name="storage_tool_search_title">重复与相似检索</string>
+    <string name="storage_tool_search_sub">内容完全相同的与画面相近的列在同一页</string>
+
+    <!-- 清除缓存（v0.1.409；用户 m08399 第 1 条） -->
+    <string name="storage_clear_cache_title">清除缓存</string>
+    <string name="storage_clear_cache_sub">删除缩略图等临时文件，不影响表情库</string>
+    <string name="storage_clear_cache_sub_size">当前 %1$s · 删除缩略图等临时文件，不影响表情库</string>
+    <string name="storage_clear_cache_empty">当前缓存为空</string>
+    <string name="storage_clear_cache_confirm_title">清除缓存？</string>
+    <string name="storage_clear_cache_confirm_message">将删除 %1$s 的临时文件（缩略图、压缩预览等）。下次查看这些图片时需要重新生成，表情与标签不受影响。</string>
+    <string name="storage_clear_cache_working">正在清理…</string>
+    <string name="storage_clear_cache_done">已清除缓存，释放 %1$s</string>
+
+    <!-- ============ 大表情压缩 · 三级页（v0.1.407；编码方式可切换见 v0.1.408） ============ -->
+    <string name="compress_title">大表情压缩</string>
+    <string name="compress_hint">当前压缩方式：%1$s · 动图、文件已经不在的不参与压缩</string>
+    <string name="compress_mode_lossy">有损 WebP（质量 80）</string>
+    <string name="compress_mode_lossless">无损 WebP</string>
+    <string name="compress_mode_lossless_png">无损 PNG</string>
+    <string name="compress_select_all">全选静图</string>
+    <string name="compress_clear">清空</string>
+    <string name="compress_selected">已选 %1$d 张 · %2$s</string>
+    <string name="compress_action">压缩（%1$d）</string>
+    <string name="compress_export_original">导出原图…</string>
+    <string name="compress_empty">库里还没有图片。</string>
+    <string name="compress_empty_hidden_animated">库里只有动图，按当前设置已隐藏。需要查看时，在高级设置里把「压缩页里的动图」改为显示。</string>
+    <string name="compress_hint_hidden">当前压缩方式：%1$s · 动图 %2$d 张已隐藏（可在高级设置里显示）；文件已经不在的不参与压缩</string>
+    <string name="compress_hidden_note"> · 动图 %1$d 张已隐藏</string>
+    <string name="compress_section_big">10 MB 以上</string>
+    <string name="compress_section_mid">1 MB – 10 MB</string>
+    <string name="compress_section_small">1 MB 以下</string>
+    <string name="compress_section_meta">%1$d 张 · %2$s</string>
+    <string name="compress_item_meta">%1$d×%2$d</string>
+    <string name="compress_badge_animated">动图</string>
+    <string name="compress_badge_missing">文件不在了</string>
+    <string name="compress_confirm_title">压缩这 %1$d 张？</string>
+    <string name="compress_confirm_message_lossy">合计 %1$s。压完换成有损 WebP（质量 80），分辨率一个像素都不动；替换前会先显示结果，确认后才替换；体积没有变小的保持原样。</string>
+    <string name="compress_confirm_message_lossless">合计 %1$s。压完换成无损 WebP，分辨率不动、逐像素和原图一致；替换前会先显示结果，确认后才替换；体积没有变小的保持原样。</string>
+    <string name="compress_confirm_message_lossless_png">合计 %1$s。压完换成无损 PNG（这台系统的 Android 版本没有无损 WebP 编码器），分辨率不动、逐像素和原图一致；替换前会先显示结果，确认后才替换；体积没有变小的保持原样。</string>
+    <string name="compress_confirm_ok">开始压缩</string>
+    <string name="compress_progress_title">正在压缩</string>
+    <string name="compress_progress">第 %1$d / %2$d 张…</string>
+    <string name="compress_result_none">这次没有可替换的结果，原图保留。</string>
+    <string name="compress_result_none_no_gain">这几张压完都没变小，原图保留。</string>
+    <string name="compress_result_none_too_big">这几张都太大，这台手机的内存装不下，原图保留。</string>
+    <string name="compress_result_partial_wrap">另有 %1$s，没有算进去。</string>
+    <string name="compress_result_part_no_gain">%1$d 张压完没变小</string>
+    <string name="compress_result_part_too_big">%1$d 张太大装不下</string>
+    <string name="compress_result_part_failed">%1$d 张读不出来或写不出去</string>
+
+    <!-- ==================== 压缩结果预览（v0.1.407） ==================== -->
+    <string name="preview_title">压缩后的样子</string>
+    <string name="preview_hint">点缩略图看大图，大图里按住按钮对比原图。</string>
+    <string name="preview_saved">这 %1$d 张合计小 %2$s</string>
+    <string name="preview_item_sizes">%1$s → %2$s</string>
+    <string name="preview_apply">替换这 %1$d 张</string>
+    <string name="preview_discard">放弃</string>
+    <string name="preview_hold">按住看原图</string>
+    <string name="preview_showing_original">原图</string>
+    <string name="preview_showing_compressed">压缩后</string>
+    <string name="preview_applied">已替换 %1$d 张，小 %2$s</string>
+    <string name="preview_applied_partial">\n%1$d 张没能替换，原图保留。</string>
+    <string name="preview_discard_title">放弃这次压缩？</string>
+    <string name="preview_discard_message">%1$d 张的压缩结果会删掉，原图保持不动。</string>
+
+    <!-- ==================== 导出图片（v0.1.407） ==================== -->
+    <string name="btn_export_count">导出 %1$d</string>
+    <string name="export_pick_title">导出这些表情</string>
+    <string name="export_pick_message">导出只是把图片复制出去，库里的原图不动。文件名用表情名，重名的自动加序号。</string>
+    <string name="export_pick_folder">保存到一个文件夹（逐张）</string>
+    <string name="export_pick_zip">打包成一个 zip</string>
+    <string name="export_progress_title">正在导出</string>
+    <string name="export_progress">第 %1$d / %2$d 张…</string>
+    <string name="export_done_folder">已导出 %1$d 张</string>
+    <string name="export_done_zip">已打包 %1$d 张（%2$s）</string>
+    <string name="export_partial">\n%1$d 张没能导出。</string>
+    <string name="export_none">一张也没导出成功。</string>
+    <string name="export_empty">先选几张表情。</string>
+    <string name="export_zip_name">EmojiChan-表情-%1$s.zip</string>
+    <string name="export_original_zip_name">EmojiChan-原图-%1$s.zip</string>
+    <string name="detail_export">导出图片</string>
+    <string name="detail_export_done">已导出</string>
+    <string name="detail_export_failed">导出失败</string>
+
+    <!-- ==================== 重复与相似检索：内容完全相同的组（v0.1.411 起与「画面相近」同页） ==================== -->
+    <string name="duplicate_group_title">%1$d 张内容完全相同</string>
+    <string name="duplicate_group_wasted">可省 %1$s</string>
+    <string name="duplicate_group_keep">保留：%1$s</string>
+    <string name="duplicate_group_keep_hint">点某张缩略图可改为保留它</string>
+    <string name="duplicate_thumb_desc">%1$s，点击改为保留这一张</string>
+    <string name="duplicate_group_delete">删掉其余 %1$d 张</string>
+    <string name="duplicate_delete_title">删掉这 %1$d 张？</string>
+    <string name="duplicate_delete_message">它们和保留的那张内容完全相同，删掉能省 %1$s。删除不可撤销；保留的那张不受影响。</string>
+    <string name="duplicate_delete_ok">删掉</string>
+    <string name="duplicate_delete_working">正在删 %1$d 张…</string>
+    <string name="duplicate_delete_done">已删掉 %1$d 张，省下 %2$s</string>
+    <string name="duplicate_delete_partial">已删掉 %1$d 张，另有 %2$d 张没删掉</string>
+    <string name="duplicate_delete_failed">删除失败：%1$s</string>
+    <!-- ==================== 画面相近的组（感知哈希，v0.1.413 起只谈相似度百分比） ==================== -->
+    <string name="similar_group_title">%1$d 张画面相近 · 相似度 %2$d%%</string>
+    <string name="similar_group_wasted">只保留一张可省 %1$s</string>
+    <string name="similar_group_hint">点缩略图选中要删除的，长按查看详情</string>
+    <string name="similar_thumb_desc">%1$s，点击选中要删除的这一张</string>
+    <string name="similar_selected">已选 %1$d 张 · 可省 %2$s</string>
+    <string name="similar_delete">删掉选中的</string>
+    <string name="similar_delete_title">删掉选中的这 %1$d 张？</string>
+    <string name="similar_delete_message">删掉能省 %1$s。删除不可撤销；没选中的不受影响。</string>
+    <string name="similar_delete_ok">删掉</string>
+    <string name="similar_delete_working">正在删 %1$d 张…</string>
+    <string name="similar_delete_done">已删掉 %1$d 张，省下 %2$s</string>
+    <string name="similar_delete_partial">已删掉 %1$d 张，另有 %2$d 张没删掉</string>
+    <string name="similar_delete_failed">删除失败：%1$s</string>
+    <!-- ==================== 合并检索页（v0.1.411：两段同页，一次比对） ==================== -->
+    <string name="search_summary">全库 %1$d 张 · 内容完全相同 %2$d 组 · 画面相近 %3$d 组</string>
+    <string name="search_scan_title">正在比对</string>
+    <string name="search_scan_prepare">正在读取表情库…</string>
+    <string name="search_scan_files">正在比对文件内容 %1$d / %2$d 张…</string>
+    <string name="search_scan_frames">正在比对画面 %1$d / %2$d 张…</string>
+    <string name="search_scan_stopped">已停止比对</string>
+    <string name="search_section_duplicate">内容完全相同</string>
+    <string name="search_section_duplicate_note">按文件内容比对：字节完全一致才归为一组</string>
+    <string name="search_section_duplicate_none">没有内容完全相同的表情</string>
+    <string name="search_section_similar">画面相近</string>
+    <string name="search_section_similar_note">按画面结构比对：相似度 %1$d%% 及以上的归为一组，相似度高的排在前面（底线可在「设置 → 高级设置」里改）</string>
+    <string name="search_section_similar_none">当前底线（相似度 %1$d%% 及以上）下没有画面相近的表情，可在「设置 → 高级设置」里放宽</string>
+    <string name="search_empty_library">库里还没有表情</string>
+    <string name="search_empty_note">先导入一些表情，这一页才会列出结果。</string>
+
+    <!-- ==================== 使用引导（v0.1.414：初次进入的四步） ==================== -->
+    <string name="onboarding_title">使用引导</string>
+    <string name="onboarding_step_format">第 %1$d 步 / 共 %2$d 步</string>
+    <string name="onboarding_skip">跳过</string>
+    <string name="onboarding_back">上一步</string>
+    <string name="onboarding_next">下一步</string>
+    <string name="onboarding_done">完成</string>
+
+    <string name="onboarding_intro_title">这个应用做什么、不做什么</string>
+    <string name="onboarding_intro_body">这个应用把散在相册和聊天里的图片收进一个表情库，聊天时把选中的表情发出去。\n\n· 表情图片、标签、收藏都只存在这台手机里。应用没有申请网络权限，也没有上传动作。\n\n· 不读聊天内容。悬浮球被点开时，自动发送服务才读一次当前页面的标题（用于判断这次发给谁）；分享之后短时间内读取一次「选择聊天」列表。这些内容不记录、不外传。\n\n· 后面三步是可选设置：不做也能用，只是发送表情时需要手动点击。每一步都能在系统设置里改回来。</string>
+
+    <string name="onboarding_overlay_title">让悬浮球能停在别的应用上面</string>
+    <string name="onboarding_overlay_body">悬浮球要停在别的应用上面，需要系统的一项权限：「显示在其他应用上层」。这一项只能在系统设置里打开，应用自己开不了。\n\n打开之后回到这里，状态会变成「已允许」；在「设置 → 表情悬浮球」里可以随时开关悬浮球。</string>
+    <string name="onboarding_overlay_status_on">当前状态：已允许</string>
+    <string name="onboarding_overlay_status_off">当前状态：还没允许</string>
+    <string name="onboarding_overlay_action">去系统设置打开</string>
+
+    <string name="onboarding_a11y_title">自动发送服务</string>
+    <string name="onboarding_a11y_body">开启后，选完表情可以由程序完成发送流程（微信里是「＋ → 相册 → 选图 → 发送」）；关闭时每一步都需要手动点击。\n\n它是系统的无障碍服务，开关在系统设置里。只在悬浮球被点开之后才读页面，平时不监听、不读屏。\n\nAndroid 13 及以上：如果那个开关是灰的，先到「应用信息 → 右上角菜单 → 允许受限设置」里放开，再回来开启。</string>
+    <string name="onboarding_a11y_status_on">当前状态：已开启</string>
+    <string name="onboarding_a11y_status_off">当前状态：还没开启</string>
+    <string name="onboarding_a11y_action">去无障碍设置</string>
+
+    <string name="onboarding_media_title">相册读权限（可选）</string>
+    <string name="onboarding_media_body">导入图片时，系统有时只给一个编号、不给文件名。有这个权限，导入的表情会使用原文件名。\n\n没有这个权限也可以正常导入：改用「从文件导入」，或者使用自动生成的名字。这一项在系统设置里可以随时收回。</string>
+    <string name="onboarding_media_status_all">当前状态：已允许</string>
+    <string name="onboarding_media_status_partial">当前状态：仅选中的照片</string>
+    <string name="onboarding_media_status_off">当前状态：还没允许</string>
+    <string name="onboarding_media_action">允许读取相册</string>
+
+    <string name="onboarding_skip_title">跳过使用引导？</string>
+    <string name="onboarding_skip_message">跳过之后不会再自动出现。没有给的权限，等需要时再给：「设置」页里的悬浮球开关和自动发送服务都会跳到对应的系统设置页。\n\n在「设置 → 高级设置 → 使用引导」里可以随时重新打开本页。</string>
+    <string name="onboarding_skip_confirm">跳过</string>
+    <string name="onboarding_skip_continue">继续引导</string>
+    <string name="onboarding_exit_title">先不做这些设置？</string>
+    <string name="onboarding_exit_message">这样退出不算看过引导，下次启动还会出现；也可以在「设置 → 高级设置 → 使用引导」里找回来。</string>
+    <string name="onboarding_exit_confirm">退出</string>
+
+    <!-- 高级设置 → 诊断里的重新入口 -->
+    <string name="settings_onboarding_title">使用引导</string>
+    <string name="settings_onboarding_sub">权限与声明的分步说明，可以重新看一遍</string>
 </resources>

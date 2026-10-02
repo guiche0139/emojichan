@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 底部导航图标：当前页变主题色（同事先 colorAccentStroke，白底上看得见），
+     其余页走次要文字色。原来的「圆角药丸」底衬在 themes.xml 的 EmojiChan.NavIndicator 里关掉了。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="?attr/colorAccentStroke" android:state_checked="true" />
+    <item android:color="@color/text_secondary" />
+</selector>

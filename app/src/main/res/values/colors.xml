@@ -3,25 +3,18 @@
     <!--
       两套色：① 语义色（背景/卡片/文字/分隔线……），深浅色各一份，值直接写在
       values/ 与 values-night/ 里，系统切深色就自动换；② 主题色调色板
-      （palette_blue_* 与 palette_pink_* 各 8 个），由 values/themes.xml 里的
+      （palette_blue_* 与 palette_pink_*），由 values/themes.xml 里的
       ThemeOverlay.EmojiChan.<色> 挑一套套上去，运行时能换。
 
-      主题色就两种，取自应用图标里的那对粉蓝：天空蓝 #99DFFF（默认）和樱花粉
-      #FF99DF。这两个原色太淡 —— 浅色模式下拿来当 colorPrimary 会白字看不见、
-      当文字也看不清 —— 所以浅色模式用同色相压深的版本（蓝 #1C7EA8 白字 4.6:1、
-      粉 #C0438F 白字 4.7:1），深色模式才用原色本身配深墨字（10:1 上下）。
+      主题色就两种，直接取自应用图标里的那对粉蓝：天空蓝 #99DFFF（默认）、樱花粉
+      #FF99DF。浅色模式用的也是这两个原色本身 —— 大块填充（选中态 chip、实心按钮、
+      开关、悬浮球）一眼就是图标里那个颜色；文字换成同色相的深墨色 on_primary，
+      原色配深墨 8.8~10.4:1，比原来压深主色配白字还稳。
 
-      语义色保持名字不变（别的布局都在用）；primary 那一组别名指向默认的蓝，
-      真正要跟着主题色走的控件用 ?attr/colorPrimary 这类主题属性取色。
+      唯一的例外是「必须画在白底上的细线和小字」（单选/复选勾、悬浮球描边、弹窗
+      文字按钮）：原色对白底只有 1.5~1.9:1，等于看不见 —— 这类地方另给一组同色相
+      深一档的 *_stroke（对白底 3.0~3.8:1），由主题属性 colorAccentStroke 取用。
     -->
-    <color name="primary">@color/palette_blue_primary</color>
-    <color name="on_primary">@color/palette_blue_on_primary</color>
-    <color name="primary_container">@color/palette_blue_primary_container</color>
-    <color name="on_primary_container">@color/palette_blue_on_primary_container</color>
-
-    <color name="secondary">@color/palette_blue_secondary</color>
-    <color name="secondary_container">@color/palette_blue_secondary_container</color>
-    <color name="on_secondary_container">@color/palette_blue_on_secondary_container</color>
     <color name="accent">#FFD166</color>
 
     <color name="background">#F5F6FA</color>
@@ -30,6 +23,8 @@
     <color name="text_primary">#1B1D2A</color>
     <color name="text_secondary">#6B7080</color>
     <color name="divider">#E7E9F0</color>
+    <!-- 缩略图角落上的小标签底色（动图 / 文件不在了），要压在图片上所以用半透明黑 -->
+    <color name="scrim_soft">#99000000</color>
 
     <color name="success">#1FA971</color>
     <color name="warning">#E8A33D</color>
@@ -42,23 +37,35 @@
     <color name="status_off">#D98324</color>
 
     <!-- ==================== 主题色调色板（浅色） ==================== -->
-    <!-- 天空蓝（默认）：主色 = 图标里那个蓝压深，次色 = 图标里的粉 -->
-    <color name="palette_blue_primary">#1C7EA8</color>
-    <color name="palette_blue_on_primary">#FFFFFF</color>
-    <color name="palette_blue_primary_container">#D9F1FF</color>
-    <color name="palette_blue_on_primary_container">#06344A</color>
-    <color name="palette_blue_secondary">#C0438F</color>
-    <color name="palette_blue_on_secondary">#FFFFFF</color>
-    <color name="palette_blue_secondary_container">#FBE0F1</color>
+    <!-- 天空蓝（默认）：主色 = 图标里的蓝，次色 = 图标里的粉 -->
+    <color name="palette_blue_primary">#99DFFF</color>
+    <color name="palette_blue_on_primary">#06283C</color>
+    <color name="palette_blue_primary_container">#DBF4FF</color>
+    <color name="palette_blue_on_primary_container">#0B3E52</color>
+    <color name="palette_blue_secondary">#FF99DF</color>
+    <color name="palette_blue_on_secondary">#3A0722</color>
+    <color name="palette_blue_secondary_container">#FFDBF4</color>
     <color name="palette_blue_on_secondary_container">#4A0A2E</color>
+    <color name="palette_blue_stroke">#2E9FD4</color>
 
-    <!-- 樱花粉：主色 = 图标里那个粉压深，次色 = 图标里的蓝 -->
-    <color name="palette_pink_primary">#C0438F</color>
-    <color name="palette_pink_on_primary">#FFFFFF</color>
-    <color name="palette_pink_primary_container">#FFE0F2</color>
+    <!-- 樱花粉：主色 = 图标里的粉，次色 = 图标里的蓝 -->
+    <color name="palette_pink_primary">#FF99DF</color>
+    <color name="palette_pink_on_primary">#3A0722</color>
+    <color name="palette_pink_primary_container">#FFDBF4</color>
     <color name="palette_pink_on_primary_container">#4A0A2E</color>
-    <color name="palette_pink_secondary">#1C7EA8</color>
-    <color name="palette_pink_on_secondary">#FFFFFF</color>
-    <color name="palette_pink_secondary_container">#D9F1FF</color>
-    <color name="palette_pink_on_secondary_container">#06344A</color>
+    <color name="palette_pink_secondary">#99DFFF</color>
+    <color name="palette_pink_on_secondary">#06283C</color>
+    <color name="palette_pink_secondary_container">#DBF4FF</color>
+    <color name="palette_pink_on_secondary_container">#0B3E52</color>
+    <color name="palette_pink_stroke">#D255A6</color>
+
+    <!-- ==================== 存储概览饼图（浅色） ==================== -->
+    <!-- 只用来区分文件格式，不表示好坏或警告等级；深浅色各一套，暗底上重挑一遍亮度。 -->
+    <color name="pie_1">#4A90D9</color>
+    <color name="pie_2">#E06BA6</color>
+    <color name="pie_3">#E8A33D</color>
+    <color name="pie_4">#3FAE8A</color>
+    <color name="pie_5">#8E7CD8</color>
+    <color name="pie_6">#8A93A5</color>
+    <color name="pie_other">#C3C8D4</color>
 </resources>

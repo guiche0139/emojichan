@@ -32,6 +32,34 @@ object ImageUtil {
         return dir
     }
 
+    /**
+     * 把「先写到缓存里、用户确认过」的文件搬进表情目录。
+     *
+     * 优先改名（同一个分区，几乎不花时间），改不动再退回复制；两种都失败就返回 null，
+     * 调用方据此判定这张没替换成功。文件名已经是 [newEmojiFileName] 那一套，落地后就是正式名。
+     */
+    fun promoteTempFile(context: Context, temp: File): File? {
+        if (!temp.isFile) return null
+        val target = File(getEmojiDir(context), temp.name)
+        if (temp.renameTo(target) && target.isFile) return target
+        return try {
+            temp.inputStream().use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            }
+            if (!target.isFile || target.length() <= 0L) {
+                target.delete()
+                null
+            } else {
+                temp.delete()
+                target
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            target.delete()
+            null
+        }
+    }
+
     fun copyImageToInternal(context: Context, uri: Uri): String? {
         var destFile: File? = null
         return try {
@@ -48,10 +76,7 @@ object ImageUtil {
                     throw IOException("上游内容不是图片（声明类型=" + declared + "），放弃导入")
                 }
                 val ext = getImageExtension(context, uri, stream, sniffed)
-                // 加随机后缀：纯时间戳在同一毫秒内连续导入会撞名，后者覆盖前者，
-                // 结果是两条记录指向同一个文件，删掉其中一个另一个也会失效。
-                val fileName = "emoji_${System.currentTimeMillis()}_${(0..0xFFFF).random().toString(16)}.$ext"
-                val target = File(getEmojiDir(context), fileName)
+                val target = File(getEmojiDir(context), newEmojiFileName(ext))
                 destFile = target
                 FileOutputStream(target).use { output -> copyWithLimit(stream, output) }
                 target.absolutePath
@@ -63,6 +88,18 @@ object ImageUtil {
             null
         }
     }
+
+    /**
+     * 生成一个库内文件名。
+     *
+     * 加随机后缀：纯时间戳在同一毫秒内连续导入会撞名，后者覆盖前者，
+     * 结果是两条记录指向同一个文件，删掉其中一个另一个也会失效。
+     *
+     * 从 [copyImageToInternal] 里抽出来是为了让打包导入也用同一套命名 ——
+     * 两处各写一遍，迟早会分叉成两种格式。
+     */
+    fun newEmojiFileName(ext: String): String =
+        "emoji_${System.currentTimeMillis()}_${(0..0xFFFF).random().toString(16)}.$ext"
 
     /**
      * 边复制边卡上限：上游 Uri 是外部给的（相册、分享面板），
@@ -523,12 +560,8 @@ object ImageUtil {
         return File(filePath).length()
     }
 
-    fun isImageFile(filePath: String): Boolean {
-        val lower = filePath.lowercase()
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
-                lower.endsWith(".png") || lower.endsWith(".gif") ||
-                lower.endsWith(".webp")
-    }
+    /** 支持哪些扩展名只看 [ImageTypes]，别在这里再抄一份。 */
+    fun isImageFile(filePath: String): Boolean = ImageTypes.isSupported(filePath)
 
     fun isGif(filePath: String): Boolean {
         return filePath.lowercase().endsWith(".gif")

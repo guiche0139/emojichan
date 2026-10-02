@@ -16,6 +16,15 @@ val keystoreProps = Properties().apply {
 val releaseStoreFile = keystoreProps.getProperty("storeFile")?.let { rootProject.file(it) }
 val hasReleaseKey = releaseStoreFile != null && releaseStoreFile.exists()
 
+// 有 keystore.properties 却找不到密钥库，直接报错停下 —— 否则会静悄悄地打出一个未签名包，
+// 装上去了才发现（0.1.401 就这么踩过一次：密钥库被挪到仓库外，release 变成未签名）。
+if (keystorePropsFile.exists() && !hasReleaseKey) {
+    throw GradleException(
+        "keystore.properties 存在，但它指向的密钥库找不到：$releaseStoreFile\n" +
+            "要么把 .jks 放回这个路径，要么删掉 keystore.properties（那样只会打出未签名包）。"
+    )
+}
+
 android {
     namespace = "com.aris.emojichan"
     compileSdk = 34
@@ -24,10 +33,12 @@ android {
         applicationId = "com.aris.emojichan"
         minSdk = 26
         targetSdk = 34
-        // 版本号规则：0.1.N —— 每构建一版把 N 加一（0.1.210 → 0.1.211）。
-        // versionCode 跟 N 保持一致，装新版才能覆盖旧版；APK 文件名会带上 versionName。
-        versionCode = 400
-        versionName = "0.1.400"
+        // 版本号规则：0.<阶段>.<构建序号> —— 每构建一版把最后一段加一（0.2.000 → 0.2.001）。
+        // versionCode 取「阶段 × 1000 + 构建序号」，跟 versionName 对得上，装新版才能覆盖旧版；
+        // 0.1.x 阶段的 versionCode 最高到 416，所以 0.2.000 从 2000 起算。
+        // APK 文件名会带上 versionName。
+        versionCode = 2000
+        versionName = "0.2.000"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

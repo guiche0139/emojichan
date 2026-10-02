@@ -58,7 +58,7 @@ object AlbumPublish {
      */
     fun publish(context: Context, sourcePath: String, mime: String): Uri? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            SendLog.d("相册", "系统低于 Android 10，没有相册路线可用")
+            SendLog.w("相册", "系统低于 Android 10，没有相册路线可用")
             return null
         }
         val source = File(sourcePath)
@@ -72,7 +72,7 @@ object AlbumPublish {
             val existing = findSlot(context)
             val uri = existing ?: createSlot(context, displayName, actualMime)
             if (uri == null) {
-                SendLog.d("相册", "建槽位失败：insert 返回 null")
+                SendLog.e("相册", "建槽位失败：insert 返回 null")
                 return@runCatching null
             }
             SendLog.d(
@@ -90,7 +90,7 @@ object AlbumPublish {
             SendLog.d("相册", "槽位已覆盖：" + written + " 字节，" + actualMime)
             uri
         }.getOrElse { e ->
-            SendLog.d("相册", "放进相册出错：" + e.javaClass.simpleName + "：" + (e.message?.take(80) ?: ""))
+            SendLog.e("相册", "放进相册出错：" + e.javaClass.simpleName + "：" + (e.message?.take(80) ?: ""))
             null
         }
     }
@@ -155,7 +155,7 @@ object AlbumPublish {
                 )
             }
         }.onFailure { e ->
-            SendLog.d("相册", "启动自检出错：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
+            SendLog.w("相册", "启动自检出错：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
         }
     }
 
@@ -199,7 +199,7 @@ object AlbumPublish {
         try {
             val out = context.contentResolver.openOutputStream(uri, "wt")
             if (out == null) {
-                SendLog.d("相册", "拿不到输出流（这条记录可能已经不是我们的了）")
+                SendLog.e("相册", "拿不到输出流（这条记录可能已经不是我们的了）")
             } else {
                 written = out.use { target ->
                     source.inputStream().use { input -> input.copyTo(target) }
@@ -250,7 +250,7 @@ object AlbumPublish {
             }
         }
     }.onFailure { e ->
-        SendLog.d("相册", "查槽位失败：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
+        SendLog.e("相册", "查槽位失败：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
     }.getOrNull()
 
     private fun createSlot(context: Context, displayName: String, mime: String): Uri? = runCatching {
@@ -264,7 +264,7 @@ object AlbumPublish {
             }
         )
     }.onFailure { e ->
-        SendLog.d("相册", "建槽位出错：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
+        SendLog.e("相册", "建槽位出错：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
     }.getOrNull()
 
     /** 独占目录里有几张图（没读权限时只数得到我们自己贡献的）。 */
@@ -315,7 +315,7 @@ object AlbumPublish {
             }
         }
     }.onFailure { e ->
-        SendLog.d("相册", "自检查询失败（" + column + "）：" + e.javaClass.simpleName)
+        SendLog.w("相册", "自检查询失败（" + column + "）：" + e.javaClass.simpleName)
     }.getOrNull()
 
     /** 这条槽位记录还标着 IS_PENDING 的话，返回它的大小；没标或查不到返回 -1。 */
@@ -350,6 +350,6 @@ object AlbumPublish {
     private fun update(context: Context, uri: Uri, values: ContentValues, what: String): Int = runCatching {
         context.contentResolver.update(uri, values, null, null)
     }.onFailure { e ->
-        SendLog.d("相册", what + "失败：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
+        SendLog.e("相册", what + "失败：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
     }.getOrDefault(0)
 }

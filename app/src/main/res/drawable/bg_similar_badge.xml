@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 相似页里被选中要删的那张：右上角一个勾。描边色跟主题走，深色主题下也看得清。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="?attr/colorAccentStroke" />
+</shape>

@@ -11,9 +11,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         EmojiEntity::class,
         TagEntity::class,
-        EmojiTagCrossRef::class
+        EmojiTagCrossRef::class,
+        ImageFeatureEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class EmojiDatabase : RoomDatabase() {
@@ -201,6 +202,42 @@ abstract class EmojiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4 → v5：新增内容指纹表（「完全相同」与「相似」检索共用）。
+         *
+         * 纯新增，不动任何老表 —— 已有指纹全为空，第一次进这两个页面会把需要的那几张算出来。
+         * v5 还没发布过，所以「相似」用的 dhash 列直接写进同一份 DDL，没有 5→6 的补丁。
+         *
+         * 两个细节：
+         * 1. 外键写在 DDL 里并带 ON DELETE CASCADE，与实体上的声明一字不差：Room 打开
+         *    数据库时会拿自己的期望结构逐项校验，外键/索引对不上就直接抛异常。
+         * 2. 索引名必须用 Room 那套命名（index_表名_列名），否则校验同样过不去。
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `image_features` (" +
+                        "`emojiId` INTEGER NOT NULL, " +
+                        "`bytes` INTEGER NOT NULL, " +
+                        "`modifiedAt` INTEGER NOT NULL, " +
+                        "`sha256` TEXT, " +
+                        "`dhash` INTEGER, " +
+                        "`computedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`emojiId`), " +
+                        "FOREIGN KEY(`emojiId`) REFERENCES `emojis`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_image_features_emojiId` " +
+                        "ON `image_features` (`emojiId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_image_features_sha256` " +
+                        "ON `image_features` (`sha256`)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): EmojiDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -208,7 +245,7 @@ abstract class EmojiDatabase : RoomDatabase() {
                     EmojiDatabase::class.java,
                     "emoji_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance

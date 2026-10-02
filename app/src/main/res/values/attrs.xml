@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      主题色之外的一档：同色相、但深到能在白底上看清的线条色。
+      主色那两个原色（#99DFFF / #FF99DF）当大块填充很好看，当「白底上的细线与
+      小字」只有 1.5~1.9:1，看不见 —— 单选/复选勾、悬浮球描边、弹窗文字按钮这些
+      地方改用这个，布局里写 ?attr/colorAccentStroke，值由各套主题在
+      values/themes.xml 里赋。
+    -->
+    <attr name="colorAccentStroke" format="color" />
+</resources>

@@ -115,10 +115,10 @@ object UiPrefs {
 
     // ---------------- 悬浮球 ----------------
 
-    /** 默认：扁平猫脸（应用图标那张，drawable/ic_cat_face.xml 的几何 + ic_ball_flat.xml 的取景）。 */
+    /** 默认：扁平猫脸（应用图标那张，drawable/ic_cat_face.xml 的几何 + ic_ball_flat.xml 的取景），设置页写作「默认」。 */
     const val BALL_DEFAULT = "default"
 
-    /** 原图标：像素猫（drawable-nodpi/game.png）。0.1.401 之前它一直是默认那一版。 */
+    /** 游戏开发部：像素猫（drawable-nodpi/game.png），设置页写作「游戏开发部」。0.1.401 之前它一直是默认那一版。 */
     const val BALL_CLASSIC = "classic"
 
     const val BALL_DOT = "dot"

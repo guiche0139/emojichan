@@ -5,7 +5,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 发送链路的现场记录（内存环形缓冲 + 落盘）。
@@ -13,18 +15,33 @@ import java.util.concurrent.Executors
  * 这条链路的每一步都发生在别的应用之上：悬浮窗、无障碍服务、微信的「选择聊天」页。
  * 一旦卡住，界面上什么也看不到 —— 所以每一步都写下来，用户导出后一次就能看清是哪一环断的。
  *
+ * 每条记录分三级：错误 = 这一趟动作最后没做成，警告 = 没按预期走但自己兜住了，其余是普通现场。
+ * 出现错误时自动把当前整段日志另存一份到 filesDir/error_logs/，不必守着界面等它复现。
+ *
  * 写入走单线程队列，不占主线程；内存里只留最近 MAX_LINES 条，
  * 文件超过 MAX_FILE_BYTES 就砍掉前一半，避免无限长。
  */
 object SendLog {
 
+    /** 记录级别：写在每行开头的方括号里，日志页按级别上色。 */
+    enum class Level(val label: String) {
+        INFO("普通"),
+        WARN("警告"),
+        ERROR("错误")
+    }
+
     private const val FILE_NAME = "send_log.txt"
     private const val MAX_LINES = 800
     private const val MAX_FILE_BYTES = 512 * 1024
 
+    private const val ERROR_DIR = "error_logs"
+    private const val ERROR_KEEP = 20
+    private const val ERROR_SAVE_GAP_MS = 30_000L
+
     private val lock = Any()
     private val lines = ArrayDeque<String>()
     private val format = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
+    private val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault())
     private val writer = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "send-log-writer").apply { isDaemon = true }
     }
@@ -32,17 +49,22 @@ object SendLog {
     @Volatile
     private var file: File? = null
 
+    @Volatile
+    private var errorDir: File? = null
+
+    /** 上一次存错误日志的时刻（只在写入线程里读，init 换数据目录时重置）。 */
+    @Volatile
+    private var lastErrorSave = 0L
+
     fun init(context: Context) {
-        if (file != null) return
+        val app = context.applicationContext
+        val target = File(app.filesDir, FILE_NAME)
         synchronized(lock) {
-            if (file != null) return
-            val target = File(context.applicationContext.filesDir, FILE_NAME)
+            // 错误日志目录每次都指一遍：重装或测试会换数据目录。
+            errorDir = File(app.filesDir, ERROR_DIR)
+            if (file == target) return
             file = target
-            // 日志第一行写清版本，出问题时光看日志就能确认对应哪一次构建。
-            val version = runCatching {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-            }.getOrDefault("?")
-            d("版本", "应用启动，版本 v" + version)
+            lastErrorSave = 0L
             // 把上一次运行留下的日志尾巴读回来，一次导出就能看到全过程。
             runCatching {
                 if (target.exists()) {
@@ -50,20 +72,39 @@ object SendLog {
                     lines.addAll(target.readLines().takeLast(MAX_LINES))
                 }
             }
+            // 日志第一行写清版本，出问题时光看日志就能确认对应哪一次构建。
+            val version = runCatching {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+            }.getOrDefault("?")
+            write(Level.INFO, "版本", "应用启动，版本 v" + version)
         }
     }
 
-    fun d(tag: String, message: String) {
+    /** 普通：这一趟只是把现场记下来。 */
+    fun d(tag: String, message: String) = write(Level.INFO, tag, message)
+
+    /** 警告：没按预期走，但自己兜住了或者提前退出了。 */
+    fun w(tag: String, message: String) = write(Level.WARN, tag, message)
+
+    /** 错误：这一趟动作最后没做成；顺手存一份错误日志。 */
+    fun e(tag: String, message: String) = write(Level.ERROR, tag, message)
+
+    private fun write(level: Level, tag: String, message: String) {
         val line: String
         val target: File?
         synchronized(lock) {
-            line = format.format(Date()) + "  [" + tag + "]  " + message
+            line = format.format(Date()) + "  [" + level.label + "]  [" + tag + "]  " + message
             lines.addLast(line)
             while (lines.size > MAX_LINES) lines.removeFirst()
             target = file
         }
         val sink = target ?: return
-        runCatching { writer.execute { append(sink, line) } }
+        runCatching {
+            writer.execute {
+                append(sink, line)
+                if (level == Level.ERROR) saveErrorLog()
+            }
+        }
     }
 
     /**
@@ -88,6 +129,56 @@ object SendLog {
             }
             target.appendText(line + "\n")
         }
+    }
+
+    /**
+     * 出错时把当前整段日志另存一份（在写入线程里做，不占调用方）。
+     *
+     * 节流 ERROR_SAVE_GAP_MS：一条链路上常连着抛好几个错，没必要每个都存一个文件；
+     * 只留最新 ERROR_KEEP 份，按文件名里的时间戳倒序砍掉更旧的。
+     */
+    private fun saveErrorLog() {
+        val now = System.currentTimeMillis()
+        if (now - lastErrorSave < ERROR_SAVE_GAP_MS) return
+        val dir = errorDir ?: return
+        val body = synchronized(lock) {
+            if (lines.isEmpty()) return
+            lines.joinToString("\n")
+        }
+        lastErrorSave = now
+        runCatching {
+            dir.mkdirs()
+            val name = "EmojiChan-错误日志-" + stamp.format(Date(now)) + ".txt"
+            val head = "# EmojiChan 错误日志 · 保存于 " + format.format(Date(now)) +
+                " · 当前会话最近 " + lineCount() + " 行\n"
+            File(dir, name).writeText(head + body + "\n")
+            dir.listFiles()
+                ?.sortedByDescending { it.name }
+                ?.drop(ERROR_KEEP)
+                ?.forEach { runCatching { it.delete() } }
+        }
+    }
+
+    /** 已保存的错误日志，最近的在最前面。 */
+    fun errorLogs(): List<File> {
+        val dir = errorDir ?: return emptyList()
+        return runCatching {
+            dir.listFiles()?.filter { it.isFile }?.sortedByDescending { it.name } ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    fun errorLogCount(): Int = errorLogs().size
+
+    /** 当前内存里这批记录中有多少条错误（日志页标题上用）。 */
+    fun errorCount(): Int = synchronized(lock) {
+        lines.count { it.contains("[" + Level.ERROR.label + "]") }
+    }
+
+    /** 等写入队列排空：导出、自测时避免读到还没落盘的内容。 */
+    fun awaitIdle(timeoutMs: Long = 2000) {
+        val latch = CountDownLatch(1)
+        runCatching { writer.execute { latch.countDown() } }
+        runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }
     }
 
     fun readAll(): String = synchronized(lock) { lines.joinToString("\n") }

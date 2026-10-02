@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主界面标题行最右边的自动发送状态点：形状和默认色在这里，
+     实际颜色由 MainActivity.refreshSenderStatus() 按「已连上 / 没开」涂成绿 / 黄 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/status_off" />
+</shape>

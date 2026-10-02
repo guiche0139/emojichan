@@ -11,6 +11,7 @@ import android.os.Looper
 import androidx.core.content.FileProvider
 import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
+import com.aris.emojichan.util.ImageTypes
 import java.io.File
 
 /**
@@ -67,16 +68,17 @@ object EmojiShare {
             FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
         } catch (e: Exception) {
             e.printStackTrace()
-            SendLog.d("分享", "取 FileProvider uri 失败：" + describe(e))
+            SendLog.e("分享", "取 FileProvider uri 失败：" + describe(e))
             return Result.NoTarget
         }
 
-        // GIF 先按精确类型发（微信据此决定当动图还是静图）；万一对不上，
-        // 再用最宽泛的 image/* 试一遍 —— 接收方本来也是按文件内容识别的。
-        val types = if (emoji.fileType.equals("gif", ignoreCase = true)) {
-            listOf("image/gif", "image/*")
+        // 先按扩展名报精确类型（gif / webp / jpg 都报准，微信据此决定当动图还是静图）；
+        // 万一对不上，再用最宽泛的 image/* 试一遍 —— 接收方本来也是按文件内容识别的。
+        val exact = ImageTypes.mimeOf(emoji.filePath)
+        val types = if (exact == ImageTypes.UNKNOWN_MIME) {
+            listOf(exact)
         } else {
-            listOf("image/*")
+            listOf(exact, ImageTypes.UNKNOWN_MIME)
         }
 
         // 从 Service 启动 Activity 必须带 FLAG_ACTIVITY_NEW_TASK；
@@ -98,7 +100,7 @@ object EmojiShare {
                         return Result.SentToApp
                     } catch (e: Exception) {
                         val reason = describe(e)
-                        SendLog.d("分享", "拉起失败：" + label + " type=" + type + " ⇒ " + reason)
+                        SendLog.e("分享", "拉起失败：" + label + " type=" + type + " ⇒ " + reason)
                         if (reason !in errors) errors += reason
                     }
                 }
@@ -112,7 +114,7 @@ object EmojiShare {
             buildSendIntent(uri, types.last()),
             context.getString(R.string.overlay_chooser_title)
         ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-        SendLog.d("分享", "直达没成，退系统分享面板。之前的失败：" + errors.joinToString(" ｜ "))
+        SendLog.w("分享", "直达没成，退系统分享面板。之前的失败：" + errors.joinToString(" ｜ "))
         if (start(context, chooser)) {
             val detail = errors.joinToString(" ｜ ").take(220)
             return Result.ShowedChooser(if (detail.isEmpty()) null else detail)
@@ -136,14 +138,16 @@ object EmojiShare {
         val uri = try {
             FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
         } catch (e: Exception) {
-            SendLog.d("剪贴板", "取 FileProvider uri 失败：" + describe(e))
+            SendLog.e("剪贴板", "取 FileProvider uri 失败：" + describe(e))
             return false
         }
         return try {
             // 没有实现图片剪贴板的 App 会用 coerceToText() 读第 0 项，URI 就会被当成文字
             // 粘进输入框（聊天框里留下一串 content://）。所以这一项要显式给空文本 ——
             // ClipData.Item 的 text 是只读的，只能在构造时就写成 empty，不能事后改。
-            val type = context.contentResolver.getType(uri) ?: "image/*"
+            // 剪贴板类型自己按扩展名给准（FileProvider 的 getType 也是按后缀猜，但没必要多绕一步）
+            val type = ImageTypes.mimeOf(emoji.filePath).takeIf { it != ImageTypes.UNKNOWN_MIME }
+                ?: context.contentResolver.getType(uri) ?: ImageTypes.UNKNOWN_MIME
             val clip = ClipData("emoji", arrayOf(type), ClipData.Item("", null as String?, null as Intent?, uri))
             // 上一份剪贴板已经不在系统里了，它换来的读权限先收回，再给这一份授权（emc-1-029）。
             releaseClipboardGrants(context)
@@ -165,7 +169,7 @@ object EmojiShare {
             true
         } catch (e: Exception) {
             e.printStackTrace()
-            SendLog.d("剪贴板", "写剪贴板失败：" + describe(e))
+            SendLog.e("剪贴板", "写剪贴板失败：" + describe(e))
             false
         }
     }

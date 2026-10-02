@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  重复页里的一张缩略图。描边是「当前保留的那张」的指示：
+  这一份是没被保留的（灰线），被保留的那张换用 bg_duplicate_thumb_kept（主题描边色）。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/surface_variant" />
+    <corners android:radius="12dp" />
+    <stroke
+        android:width="2dp"
+        android:color="@color/divider" />
+</shape>

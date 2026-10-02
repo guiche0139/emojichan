@@ -86,13 +86,13 @@
         android:paddingTop="10dp">
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/logClipCheck"
+            android:id="@+id/logExport"
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:minHeight="44dp"
-            android:text="@string/log_clip_check"
+            android:text="@string/log_export"
             android:textSize="13sp"
             app:cornerRadius="14dp" />
 
@@ -108,6 +108,18 @@
             android:textSize="13sp"
             app:cornerRadius="14dp" />
     </LinearLayout>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/logErrorLogs"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="10dp"
+        android:minHeight="44dp"
+        android:textSize="13sp"
+        android:visibility="gone"
+        app:cornerRadius="14dp" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/logClear"

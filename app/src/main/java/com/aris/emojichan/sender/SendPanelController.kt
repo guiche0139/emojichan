@@ -2,7 +2,6 @@ package com.aris.emojichan.sender
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
@@ -20,6 +19,7 @@ import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
 import com.aris.emojichan.data.TagEntity
 import com.bumptech.glide.Glide
+import com.google.android.material.color.MaterialColors
 import com.bumptech.glide.load.resource.bitmap.CenterCrop
 import com.bumptech.glide.load.resource.bitmap.RoundedCorners
 import kotlinx.coroutines.CoroutineScope
@@ -271,7 +271,15 @@ class SendPanelController(
     }
 
     private fun paintChip(chip: TextView, selected: Boolean) {
-        chip.setTextColor(if (selected) Color.WHITE else themed.getColor(R.color.text_primary))
+        // 选中态是「主题色填充 + 深墨字」：字色得从主题取 —— 浅色模式的主色是图标
+        // 原色（淡蓝/淡粉），写死白字压上去只有 1.5:1，等于看不见
+        val ink = if (selected) {
+            // chip 建在 themed 上，所以直接拿它去取主题属性就行
+            MaterialColors.getColor(chip, com.google.android.material.R.attr.colorOnPrimary)
+        } else {
+            themed.getColor(R.color.text_primary)
+        }
+        chip.setTextColor(ink)
         chip.setBackgroundResource(
             if (selected) R.drawable.category_chip_selected_bg
             else R.drawable.category_chip_bg

@@ -8,10 +8,13 @@ import com.aris.emojichan.R
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
-import com.aris.emojichan.data.SearchMode
+import com.aris.emojichan.data.ImageFeatureEntity
 import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.FolderImporter
 import com.aris.emojichan.util.ImageUtil
+import java.io.InputStream
+import java.io.OutputStream
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -21,6 +24,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -58,10 +62,11 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
 
     /**
-     * 列表数据：收藏 / 关键词（普通、`$TAG:`）/ 标签 的组合过滤。
+     * 列表数据：收藏 / 搜索条件 / 标签 的组合过滤。
      *
-     * 只有一条查询路径（[EmojiRepository.observeFiltered]），不再按条件分支挑不同的
-     * DAO 方法 —— 条件一多，分支写法会有十几套重复语义。
+     * 搜索框那句话由 [EmojiFilter.parse] 解析成条件表达式（`&` 同时满足、`/` 任一满足），
+     * 这里只管攒条件，翻译成 SQL 是 [EmojiQuery] 的事 —— 只有一条查询路径
+     * （[EmojiRepository.observeFiltered]），不按条件分支挑不同的 DAO 方法。
      */
     val emojis: StateFlow<List<EmojiEntity>> = combine(
         _searchQuery,
@@ -69,21 +74,14 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         _tagMatchAll,
         _favoritesOnly
     ) { query, tagIds, matchAll, favoritesOnly ->
-        val (mode, keyword) = EmojiFilter.parseQuery(query)
         EmojiFilter(
             favoritesOnly = favoritesOnly,
-            keyword = keyword,
-            searchMode = mode,
+            expr = EmojiFilter.parse(query),
             tagIds = tagIds.toList(),
             tagMatchAll = matchAll
         )
     }.flatMapLatest { filter -> repository.observeFiltered(filter) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    /** 搜索框当前处于哪种模式，UI 用它显示「按名称搜索 / 按标签搜索」提示。 */
-    val searchMode: StateFlow<SearchMode> = _searchQuery
-        .map { query -> EmojiFilter.parseQuery(query).first }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SearchMode.NAME)
 
     /** 全部标签，过滤区与标签管理都用它。 */
     val tags: StateFlow<List<TagEntity>> = repository.observeTags()
@@ -467,4 +465,244 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         repository.removeTags(listOf(emojiId), listOf(tagId))
         null
     }
+
+    // ---------- 表情库打包导出 / 导入 ----------
+
+    /**
+     * 取一次表情总数（导出前问问有几张，给界面做提示用）。
+     *
+     * [EmojiRepository.getCount] 返回的是给界面订阅的 Flow，这里只要一个数，
+     * 所以老实 `.first()` 一下，而不是去读 StateFlow 的 `.value`（没人订阅时它是初始值）。
+     */
+    suspend fun countEmojisOnce(): Int = withContext(Dispatchers.IO) { repository.getCount().first() }
+
+    /**
+     * 把整个表情库打包写到 [output]。
+     *
+     * 打包是一锤子买卖：取快照、取标签、写 zip 全在 IO 线程里一气做完，
+     * 中途任何异常都折成 [EmojiArchive.Report.error] 交回去，不往外抛 ——
+     * 界面只看报告就够，不用再包一层 try/catch，也免得异常逃到 viewModelScope 上。
+     *
+     * 不关 [output]：那是调用方（通常是 ContentResolver 给的流）自己的事。
+     */
+    suspend fun exportLibrary(
+        output: OutputStream,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): EmojiArchive.Report = withContext(Dispatchers.IO) {
+        try {
+            EmojiArchive.export(
+                getApplication<Application>(),
+                output,
+                repository.getAllOnce(),
+                repository.getTags(),
+                repository.getAllTagLinksOnce(),
+                appVersion(),
+                onProgress
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+            EmojiArchive.Report(error = EmojiArchive.Error.IO)
+        }
+    }
+
+    /**
+     * 导入一个备份包：[openInput] 每次调用都给出一条新流（zip 不能倒带，读包要开两趟）。
+     *
+     * 两种模式共同的底线顺序是「先把图落盘 → 再动数据库 → 最后清旧文件」：
+     * 这样任何一步失败，都不会出现「库里有记录、磁盘上没图」，
+     * 也不会把用户原有的表情弄丢。失败一律折成 [EmojiArchive.Report.error]。
+     */
+    suspend fun importLibrary(
+        openInput: () -> InputStream?,
+        mode: EmojiArchive.Mode,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): EmojiArchive.Report = withContext(Dispatchers.IO) {
+        try {
+            when (mode) {
+                EmojiArchive.Mode.MERGE -> mergeImport(openInput, onProgress)
+                EmojiArchive.Mode.REPLACE -> replaceImport(openInput, onProgress)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            EmojiArchive.Report(error = EmojiArchive.Error.IO)
+        }
+    }
+
+    /**
+     * MERGE：把包里库里没有的补进来（同名同体积的已经在解包阶段被跳过）。
+     *
+     * 逐条走 [EmojiRepository.insert]：它在同一个事务里去重名、并挂上「图片」/「动图」自动标签，
+     * 之后我们再补上清单里记着的用户标签。
+     */
+    private suspend fun mergeImport(
+        openInput: () -> InputStream?,
+        onProgress: (Int, Int) -> Unit
+    ): EmojiArchive.Report {
+        val imported = EmojiArchive.import(
+            context = getApplication<Application>(),
+            openInput = openInput,
+            mode = EmojiArchive.Mode.MERGE,
+            existing = repository.getAllOnce(),
+            onProgress = onProgress
+        )
+        val report = imported.report
+        // 包本身就读坏了（不是备份包 / 打不开）：一条都别往库里塞
+        if (report.error != null) return report
+
+        val tagIds = LinkedHashSet<Long>()
+        val (stored, failed) = storeAll(imported, tagIds)
+        return report.copy(emojis = stored, failed = report.failed + failed, tags = tagIds.size)
+    }
+
+    /**
+     * REPLACE：整个库换成包里的内容。
+     *
+     * 顺序是刻意的，换一步都可能丢数据：
+     * 1) 先解包落盘 —— 解不开的话旧库一个字节都不用动，把这次写出来的文件删掉就干净了；
+     * 2) 再清库、逐条入库 —— 此时磁盘上已经躺着新图，最坏也只是库里少几条记录；
+     * 3) 最后才删旧图（旧快照里、且不在这次新文件集合里的那些）——
+     *    要是反过来先清旧图再入库，中途一失败，用户原来的表情就真没了。
+     */
+    private suspend fun replaceImport(
+        openInput: () -> InputStream?,
+        onProgress: (Int, Int) -> Unit
+    ): EmojiArchive.Report {
+        // existing 传空表：REPLACE 不去重，包里有什么就收什么
+        val imported = EmojiArchive.import(
+            context = getApplication<Application>(),
+            openInput = openInput,
+            mode = EmojiArchive.Mode.REPLACE,
+            existing = emptyList(),
+            onProgress = onProgress
+        )
+        val report = imported.report
+        val newPaths = imported.emojis.mapTo(HashSet(imported.emojis.size)) { it.filePath }
+        if (report.error != null) {
+            // 解包没成，就别碰数据库：把这次写出来的文件全部收回去，旧库原样不动
+            newPaths.forEach { ImageUtil.deleteFile(it) }
+            return report
+        }
+
+        // 清库之前先把磁盘现状记下来：清完就再也分不清哪些是老图了
+        val oldPaths = ImageUtil.listEmojiFiles(getApplication<Application>())
+
+        val tagIds = LinkedHashSet<Long>()
+        repository.clearLibrary()
+        val (stored, failed) = storeAll(imported, tagIds)
+        // 新库已经落定，这会儿才可以动旧文件；快照里的新文件被 newPaths 挡着，绝不会误删
+        for (path in oldPaths) {
+            if (path !in newPaths) ImageUtil.deleteFile(path)
+        }
+        return EmojiArchive.Report(
+            emojis = stored,
+            failed = report.failed + failed,
+            tags = tagIds.size,
+            bytes = report.bytes
+        )
+    }
+
+    /**
+     * 把解出来的记录逐条入库，再补上清单里的标签。
+     *
+     * 入库失败的那一张，连刚解出来的文件一起删掉：库里有记录、磁盘上没图（反过来也一样）
+     * 都会让列表里多出一张打不开的空图。
+     *
+     * @param tagIds 收集这次导入真正用到过的标签 id（跨所有表情去重，用来填 Report.tags）。
+     * @return first = 成功入库的张数，second = 入库失败的张数。
+     */
+    private suspend fun storeAll(
+        imported: EmojiArchive.Imported,
+        tagIds: MutableSet<Long>
+    ): Pair<Int, Int> {
+        var stored = 0
+        var failed = 0
+        imported.emojis.forEachIndexed { index, emoji ->
+            val id = runCatching { repository.insert(emoji) }.getOrNull()
+            if (id == null || id <= 0L) {
+                ImageUtil.deleteFile(emoji.filePath)
+                failed++
+                return@forEachIndexed
+            }
+            stored++
+            attachTags(id, imported.tagsOf.getOrElse(index) { emptyList() }, tagIds)
+        }
+        return stored to failed
+    }
+
+    /**
+     * 把清单里记着的标签名挂到刚入库的表情上。
+     *
+     * 同一张表情上的重名标签先并掉：DAO 那边虽然是 IGNORE（重复挂不会炸），
+     * 但白跑一趟 SQL 不说，「这次导入用到几个标签」的计数也会跟着虚高。
+     */
+    private suspend fun attachTags(emojiId: Long, names: List<String>, tagIds: MutableSet<Long>) {
+        val wanted = names.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (wanted.isEmpty()) return
+        val ids = ArrayList<Long>(wanted.size)
+        for (name in wanted) {
+            // 单个标签建不出来（名字为空 / 写库失败）就跳过它，不该连累这张表情
+            val tagId = repository.ensureTag(name) ?: continue
+            ids.add(tagId)
+        }
+        if (ids.isEmpty()) return
+        repository.addTags(listOf(emojiId), ids)
+        tagIds.addAll(ids)
+    }
+
+    // ---------- 存储管理 ----------
+
+    /**
+     * 取一次全部表情。
+     *
+     * 存储页要的是「每张图的文件路径 + 体积」，而且要按磁盘实际占用重算一遍 ——
+     * 订阅 Flow 只会拿到数据库里记着的旧数，不合适。
+     */
+    suspend fun getAllEmojisOnce(): List<EmojiEntity> = withContext(Dispatchers.IO) { repository.getAllOnce() }
+
+    /**
+     * 压缩成功后回写：这张表情的文件换成了新的 WebP。
+     *
+     * 返回 false 表示没写成功，调用方据此决定「删掉新文件、保留旧图」——
+     * 宁可这次白压，也不能让数据库指向一个不存在的新文件。
+     */
+    suspend fun replaceEmojiFile(
+        id: Long,
+        filePath: String,
+        fileSize: Long,
+        width: Int,
+        height: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            repository.updateCompressed(id, filePath, "image", fileSize, width, height)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    // ---------- 重复与相似检索 ----------
+
+    /** 全库内容指纹。判定「完全相同」时先拿它当缓存：体积与修改时间都对得上就不必再读文件。 */
+    suspend fun allImageFeatures(): List<ImageFeatureEntity> =
+        withContext(Dispatchers.IO) { repository.getAllFeatures() }
+
+    /** 把这一次新算出来的指纹存回去，下次进重复页直接复用。 */
+    suspend fun saveImageFeatures(features: List<ImageFeatureEntity>) =
+        withContext(Dispatchers.IO) { repository.saveFeatures(features) }
+
+    /**
+     * 重复页要删的那几张。刻意和主页、详情页共用同一套「先删文件、确认删掉才删记录」，
+     * 不另起一套删除逻辑。
+     *
+     * @return 文件删除失败、因而保留下来的张数。
+     */
+    suspend fun deleteEmojisForTool(ids: List<Long>): Int =
+        withContext(Dispatchers.IO) { deleteWithFiles(ids) }
+
+    /** 清单里记的应用版本号；取不到就写问号 —— 取版本号失败不该把整个备份带崩。 */
+    private fun appVersion(): String = runCatching {
+        val app = getApplication<Application>()
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName
+    }.getOrNull() ?: "?"
 }

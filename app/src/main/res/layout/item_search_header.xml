@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  合并检索页的一段小标题（v0.1.411）：标题 + 一行说明。
+  同一份布局两种用法，文案由 Adapter 按段决定；「画面相近」那一段的说明里带着当前的底线
+  （内部是感知哈希的距离，v0.1.413 起页面显示成相似度百分比）—— 那条底线 v0.1.412 起挪到高级设置，页面上不再有切档的开关。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="4dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="4dp"
+    android:paddingBottom="6dp">
+
+    <TextView
+        android:id="@+id/searchSectionTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_primary"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/searchSectionNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:lineSpacingExtra="2dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+</LinearLayout>

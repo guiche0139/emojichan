@@ -134,4 +134,42 @@ class EmojiRepository(context: Context) {
     /** 把一张表情的标签集合整体换掉（详情页编辑）。 */
     suspend fun setTagsOf(emojiId: Long, tagIds: List<Long>) =
         emojiDao.setTagsOf(emojiId, tagIds)
+
+    // ---------- 表情库打包导出 / 导入 ----------
+
+    /**
+     * 全库快照（导出备份包、MERGE 导入时算去重用）。
+     *
+     * 刻意不复用 [getAllEmojis]：那条是 Flow，打包是一次性的活，
+     * 收 Flow 还得自己 first() 加超时，不如直查一次干净。
+     */
+    suspend fun getAllOnce(): List<EmojiEntity> = emojiDao.getAllEmojisOnce()
+
+    /** 全部「表情 × 标签」挂载行（导出时把标签名写进清单）。 */
+    suspend fun getAllTagLinksOnce(): List<EmojiTagCrossRef> = emojiDao.getAllTagLinks()
+
+    /** 清空表情库（REPLACE 导入换库用）。表情文件由调用方负责删。 */
+    suspend fun clearLibrary() = emojiDao.clearLibrary()
+
+    // ---------- 存储管理 ----------
+
+    // ---------- 内容指纹（重复检索用） ----------
+
+    /** 全库指纹。判定「完全相同」时先拿它当缓存，体积和修改时间都对得上就复用。 */
+    suspend fun getAllFeatures(): List<ImageFeatureEntity> = emojiDao.getAllFeatures()
+
+    /** 写入这次新算出来的指纹。空列表直接跳过，省一次空事务。 */
+    suspend fun saveFeatures(features: List<ImageFeatureEntity>) {
+        if (features.isNotEmpty()) emojiDao.upsertFeatures(features)
+    }
+
+    /** 压缩替换：文件换成了新的那份，路径、体积、尺寸跟着改。 */
+    suspend fun updateCompressed(
+        id: Long,
+        filePath: String,
+        fileType: String,
+        fileSize: Long,
+        width: Int,
+        height: Int
+    ) = emojiDao.updateCompressed(id, filePath, fileType, fileSize, width, height)
 }

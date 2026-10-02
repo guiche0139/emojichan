@@ -43,7 +43,7 @@ class BallTileService : TileService() {
 
     private fun startBall() {
         if (!Settings.canDrawOverlays(this)) {
-            SendLog.d("磁贴", "没有「显示在其他应用上层」权限，开界面去授权")
+            SendLog.w("磁贴", "没有「显示在其他应用上层」权限，开界面去授权")
             openApp(startBall = false)
             return
         }
@@ -52,7 +52,7 @@ class BallTileService : TileService() {
             SendLog.d("磁贴", "已让悬浮球服务启动")
         } catch (e: Exception) {
             // 后台起服务被拒（各 ROM 判断不一）：退回主界面，那里是前台，起服务一定合法。
-            SendLog.d("磁贴", "后台起服务被拒（" + e.javaClass.simpleName + "），改开主界面")
+            SendLog.w("磁贴", "后台起服务被拒（" + e.javaClass.simpleName + "），改开主界面")
             openApp(startBall = true)
         }
     }

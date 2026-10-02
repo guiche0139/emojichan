@@ -47,6 +47,15 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!--
+          版本页的 GitHub 入口要把人送到发布页。包可见性只看声明：不写这一条，
+          代码里 resolveActivity(VIEW + https) 永远返回 null —— 直接 startActivity 其实能用，
+          但那样就没法在「没有浏览器」时给一句不一样的提示。
+        -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
     <application
         android:name=".EmojiChanApp"
@@ -68,7 +77,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!--
-              出现在系统分享面板里：别的应用分享图片 / GIF 时能选「表情酱」，直接收进表情库。
+              出现在系统分享面板里：别的应用分享图片 / GIF 时能选「Emojichan」，直接收进表情库。
               只声明 image/*（含 image/gif），不去抢文档、音频那些分享。
             -->
             <intent-filter>
@@ -83,6 +92,22 @@
             </intent-filter>
         </activity>
         <activity android:name=".EmojiDetailActivity" />
+        <activity android:name=".AdvancedSettingsActivity" />
+        <activity android:name=".storage.StorageActivity" />
+        <activity android:name=".storage.CompressActivity" />
+        <activity android:name=".storage.CompressPreviewActivity" />
+        <activity android:name=".storage.SearchActivity" />
+        <activity
+            android:name=".VersionActivity"
+            android:label="@string/settings_version_title" />
+        <!--
+          初次进入的使用引导（v0.1.414）：讲清做什么 / 不做什么，再把人送到三个系统设置页
+          （悬浮球要的「显示在其他应用上层」、无障碍、相册读权限）。不导出，只能从应用里进。
+        -->
+        <activity
+            android:name=".OnboardingActivity"
+            android:exported="false"
+            android:label="@string/onboarding_title" />
         <activity
             android:name=".sender.SendLogActivity"
             android:exported="false"

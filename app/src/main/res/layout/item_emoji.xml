@@ -50,7 +50,7 @@
                     android:layout_height="24dp"
                     android:layout_gravity="top|start"
                     android:layout_margin="6dp"
-                    android:buttonTint="?attr/colorPrimary"
+                    android:buttonTint="?attr/colorAccentStroke"
                     android:visibility="gone" />
             </FrameLayout>
 

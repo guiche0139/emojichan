@@ -6,12 +6,17 @@
       标题栏就不再是一条色块，而是页面的一部分。
       颜色槽位引用的是 palette_* 调色板 —— 换主题色就是换一套 overlay（见文件末尾），
       深色模式则由 values-night/ 里的同名资源接管。
+
+      自定义槽位 colorAccentStroke：主色那两个原色当大块填充很好看，但当「画在白底
+      上的细线和小字」（单选/复选勾、悬浮球描边、弹窗文字按钮）只有 1.5~1.9:1，
+      看不见 —— 这类地方改用同色相深一档的 *_stroke（3.0~3.8:1）。
     -->
     <style name="Theme.EmojiChan" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">@color/palette_blue_primary</item>
         <item name="colorOnPrimary">@color/palette_blue_on_primary</item>
         <item name="colorPrimaryContainer">@color/palette_blue_primary_container</item>
         <item name="colorOnPrimaryContainer">@color/palette_blue_on_primary_container</item>
+        <item name="colorAccentStroke">@color/palette_blue_stroke</item>
 
         <item name="colorSecondary">@color/palette_blue_secondary</item>
         <item name="colorOnSecondary">@color/palette_blue_on_secondary</item>
@@ -28,13 +33,19 @@
         <item name="colorOutlineVariant">@color/divider</item>
         <item name="colorError">@color/danger</item>
 
-        <item name="colorAccent">@color/palette_blue_primary</item>
+        <!-- colorAccent 是老式 AppCompat 控件（输入光标、旧式勾选、AppCompat 弹窗）
+             的强调色，跟着线条色走 -->
+        <item name="colorAccent">@color/palette_blue_stroke</item>
         <item name="android:colorBackground">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:windowLightNavigationBar">true</item>
+
+        <!-- 弹窗按钮：M3 默认取 colorPrimary，浅色模式下是那种淡蓝/淡粉，白底上
+             几乎看不见 —— 换成本地覆盖，用深色墨字 -->
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.EmojiChan.Dialog</item>
     </style>
 
     <!-- ==================== 主题色 ====================
@@ -49,11 +60,12 @@
         <item name="colorOnPrimary">@color/palette_blue_on_primary</item>
         <item name="colorPrimaryContainer">@color/palette_blue_primary_container</item>
         <item name="colorOnPrimaryContainer">@color/palette_blue_on_primary_container</item>
+        <item name="colorAccentStroke">@color/palette_blue_stroke</item>
         <item name="colorSecondary">@color/palette_blue_secondary</item>
         <item name="colorOnSecondary">@color/palette_blue_on_secondary</item>
         <item name="colorSecondaryContainer">@color/palette_blue_secondary_container</item>
         <item name="colorOnSecondaryContainer">@color/palette_blue_on_secondary_container</item>
-        <item name="colorAccent">@color/palette_blue_primary</item>
+        <item name="colorAccent">@color/palette_blue_stroke</item>
     </style>
 
     <style name="ThemeOverlay.EmojiChan.Pink" parent="">
@@ -61,11 +73,12 @@
         <item name="colorOnPrimary">@color/palette_pink_on_primary</item>
         <item name="colorPrimaryContainer">@color/palette_pink_primary_container</item>
         <item name="colorOnPrimaryContainer">@color/palette_pink_on_primary_container</item>
+        <item name="colorAccentStroke">@color/palette_pink_stroke</item>
         <item name="colorSecondary">@color/palette_pink_secondary</item>
         <item name="colorOnSecondary">@color/palette_pink_on_secondary</item>
         <item name="colorSecondaryContainer">@color/palette_pink_secondary_container</item>
         <item name="colorOnSecondaryContainer">@color/palette_pink_on_secondary_container</item>
-        <item name="colorAccent">@color/palette_pink_primary</item>
+        <item name="colorAccent">@color/palette_pink_stroke</item>
     </style>
 
     <!-- 大标题（主界面顶部）：标题直接落在页面背景上 -->
@@ -76,8 +89,30 @@
     <style name="TextAppearance.EmojiChan.Subtitle" parent="TextAppearance.Material3.LabelMedium">
         <item name="android:textColor">@color/text_secondary</item>
     </style>
+    <!-- 底部导航「当前页」的底衬：M3 默认是一颗圆角药丸，这里把它整个关掉
+         （宽高 0dp + 全透明），当前页只靠图标变成主题色来标（见 res/color/nav_icon_tint.xml）。 -->
+    <style name="EmojiChan.NavIndicator" parent="Widget.Material3.BottomNavigationView.ActiveIndicator">
+        <item name="android:width">0dp</item>
+        <item name="android:height">0dp</item>
+        <item name="android:color">@android:color/transparent</item>
+    </style>
+
     <style name="EmojiChan.SectionLabel" parent="TextAppearance.Material3.LabelLarge">
         <item name="android:textColor">@color/text_secondary</item>
         <item name="android:letterSpacing">0.06</item>
+    </style>
+
+    <!-- ==================== 弹窗 ====================
+         只改一处：底部那排文字按钮改成深色墨字。M3 默认给文字按钮用 colorPrimary，
+         而浅色模式的主色就是图标原色（淡蓝/淡粉），压在弹窗的浅色底上几乎看不见。
+    -->
+    <style name="ThemeOverlay.EmojiChan.Dialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.EmojiChan.DialogButton</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.EmojiChan.DialogButton</item>
+        <item name="buttonBarNeutralButtonStyle">@style/Widget.EmojiChan.DialogButton</item>
+    </style>
+
+    <style name="Widget.EmojiChan.DialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
+        <item name="android:textColor">?attr/colorOnPrimaryContainer</item>
     </style>
 </resources>

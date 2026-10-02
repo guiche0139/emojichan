@@ -18,26 +18,43 @@
         app:title="@string/detail_title"
         app:titleTextColor="@color/text_primary" />
 
-    <com.google.android.material.card.MaterialCardView
+    <!--
+      图片区（v0.1.409 起）：外面这层只负责占住「剩下的高度」，里面那张卡片会跟着图片的宽高比
+      自己长、自己缩 —— 尺寸由代码按图片实际大小算好再塞进来（见 EmojiDetailActivity.renderImage）。
+      小图就只有一小块卡片，横图铺满宽度，大图/长图吃满能用的高度，任何情况下都不裁。
+    -->
+    <FrameLayout
+        android:id="@+id/detailImageArea"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginHorizontal="16dp"
-        android:layout_marginTop="4dp"
         android:layout_weight="1"
-        app:cardBackgroundColor="@color/surface"
-        app:cardCornerRadius="18dp"
-        app:cardElevation="0dp"
-        app:strokeColor="@color/divider"
-        app:strokeWidth="1dp">
+        android:paddingStart="16dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="4dp">
 
-        <ImageView
-            android:id="@+id/emojiImageView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:adjustViewBounds="true"
-            android:padding="12dp"
-            android:scaleType="fitCenter" />
-    </com.google.android.material.card.MaterialCardView>
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/detailImageCard"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:minWidth="140dp"
+            android:minHeight="140dp"
+            app:cardBackgroundColor="@color/surface"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/divider"
+            app:strokeWidth="1dp">
+
+            <ImageView
+                android:id="@+id/emojiImageView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:padding="12dp"
+                android:scaleType="fitCenter" />
+        </com.google.android.material.card.MaterialCardView>
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -80,6 +97,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnAddTag"
+                android:textColor="?attr/colorAccentStroke"
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -106,16 +124,36 @@
             android:textColor="@color/text_secondary"
             android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnCopy"
-            style="@style/Widget.Material3.Button.TonalButton"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:minHeight="44dp"
-            android:text="@string/btn_copy"
-            android:textSize="14sp"
-            app:cornerRadius="14dp" />
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCopy"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:minHeight="44dp"
+                android:text="@string/btn_copy"
+                android:textSize="14sp"
+                app:cornerRadius="14dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnExport"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:minHeight="44dp"
+                android:text="@string/detail_export"
+                android:textSize="14sp"
+                app:cornerRadius="14dp" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

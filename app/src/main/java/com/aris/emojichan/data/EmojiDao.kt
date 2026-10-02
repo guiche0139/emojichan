@@ -236,4 +236,72 @@ interface EmojiDao {
         deleteTagLinksOf(ids)
         deleteByIds(ids)
     }
+
+    // ---------- 存储管理 ----------
+
+    /**
+     * 压缩替换：只换文件相关的几列。
+     *
+     * 名字、标签、收藏、使用次数都不动 —— 压缩对用户来说只是「这张图小了」，
+     * 不该顺手把它变成一张新表情。
+     */
+    @Query(
+        "UPDATE emojis SET filePath = :filePath, fileType = :fileType, " +
+            "fileSize = :fileSize, width = :width, height = :height WHERE id = :id"
+    )
+    suspend fun updateCompressed(
+        id: Long,
+        filePath: String,
+        fileType: String,
+        fileSize: Long,
+        width: Int,
+        height: Int
+    )
+
+    // ---------- 表情库打包导出 / 导入 ----------
+
+    /** 全库一次性读出来（打包导出用；Flow 那条是给界面订阅的）。 */
+    @Query("SELECT * FROM emojis ORDER BY createTime DESC")
+    suspend fun getAllEmojisOnce(): List<EmojiEntity>
+
+    /** 全部「表情 × 标签」挂载行：导出时要把标签名挂到每条记录上。 */
+    @Query("SELECT * FROM emoji_tags")
+    suspend fun getAllTagLinks(): List<EmojiTagCrossRef>
+
+    @Query("DELETE FROM emoji_tags")
+    suspend fun clearTagLinks()
+
+    @Query("DELETE FROM emojis")
+    suspend fun clearEmojis()
+
+    @Query("DELETE FROM tags")
+    suspend fun clearTags()
+
+    /**
+     * 清空整个表情库（REPLACE 导入在插入新数据之前调）。
+     *
+     * 必须是事务：中途失败留下「表情没了、标签还挂着」这种半截状态，
+     * 界面上的标签筛选会指向一堆空标签。
+     */
+    @Transaction
+    suspend fun clearLibrary() {
+        clearTagLinks()
+        clearFeatures()
+        clearEmojis()
+        clearTags()
+    }
+
+    // ---------- 内容指纹（重复检索用） ----------
+
+    /** 全库指纹一次读出来：判定重复时先拿它当缓存，命中就不必再读文件。 */
+    @Query("SELECT * FROM image_features")
+    suspend fun getAllFeatures(): List<ImageFeatureEntity>
+
+    /** 这一次算出来的指纹写回去；同一张图再次算过就覆盖旧值。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertFeatures(features: List<ImageFeatureEntity>)
+
+    /** 表情记录被删时外键会级联清掉指纹，这里只是换库（REPLACE 导入）前顺手清干净。 */
+    @Query("DELETE FROM image_features")
+    suspend fun clearFeatures()
 }

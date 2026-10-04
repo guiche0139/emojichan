@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -63,6 +64,17 @@ class FloatingBallService : Service() {
 
         /** 重挂窗口时把球吸到最近的边（改完大小用，见 snapBallToEdge）。 */
         private const val EXTRA_SNAP_EDGE = "snap_edge"
+
+        /**
+         * 面板挂上屏幕之后隔多久去读聊天页标题（安全审查 emc-2-032）。
+         *
+         * 读标题是同步读微信的节点树，几十到几百毫秒；隔一帧再读，这一屏才画得出来，
+         * 用户点球的感受才是「立刻开了」而不是「卡了一下才开」。
+         */
+        private const val PANEL_TITLE_DELAY_MS = 60L
+
+        /** 双击悬浮球的最小间隔：两下挨太近就是一次开、一次关（看起来像闪了一下）。 */
+        private const val TOGGLE_MIN_GAP_MS = 400L
 
         /** 供界面侧查询开关状态；进程被杀后随之复位，与窗口是否还在保持一致。 */
         @Volatile
@@ -125,6 +137,9 @@ class FloatingBallService : Service() {
 
     /** 最近一条系统 Toast：新消息来了先把旧的收掉，免得排队弹半天。 */
     private var toast: Toast? = null
+
+    /** 上一次开/关面板的时刻，用来挡双击（见 TOGGLE_MIN_GAP_MS）。 */
+    private var lastToggleAt = 0L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -223,7 +238,22 @@ class FloatingBallService : Service() {
         }
 
         attachBallTouch(view, params)
-        windowManager.addView(view, params)
+        // addView 会抛 SecurityException / BadTokenException：用户在系统设置里把「显示在其他应用
+        // 上层」撤掉、或者 START_STICKY 重建时权限已经不在了，异常冲到主线程就是当场崩进程。
+        // 同一个文件里另外几处动窗口的地方（removeView / updateViewLayout）都套了 runCatching，
+        // 只有加窗口这两处漏了（安全审查 emc-2-032）。
+        val added = runCatching { windowManager.addView(view, params) }
+        if (added.isFailure) {
+            SendLog.e(
+                "球",
+                "悬浮球挂不上屏幕（多半是悬浮窗权限被撤了）：" +
+                    (added.exceptionOrNull()?.javaClass?.simpleName ?: "未知错误")
+            )
+            // 权限已经没了：把「球开着」这个愿望一起收掉，不然下次进主界面还会再试一遍、再失败一遍。
+            SenderPrefs.setBallOn(this, false)
+            stopSelf()
+            return
+        }
 
         ballView = view
         ballParams = params
@@ -340,7 +370,12 @@ class FloatingBallService : Service() {
                     if (dragging) {
                         persistBallPosition(params)
                     } else if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        togglePanel()
+                        // 挨得太近的第二下会把刚开的面板又关掉：看起来就是「闪了一下、什么都没发生」。
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastToggleAt >= TOGGLE_MIN_GAP_MS) {
+                            lastToggleAt = now
+                            togglePanel()
+                        }
                     }
                     true
                 }
@@ -401,16 +436,34 @@ class FloatingBallService : Service() {
         // 读一次聊天页标题，面板顶部就能显示「将发给：谁」。
         // 读的是微信的节点树，几十毫秒，所以赶在面板挂上屏幕之前一次做完。
         panelAppPackage = AutoSendService.foregroundApp
-        val title = AutoSendService.readChatTitle()
-        controller.setTarget(title)
-        SendLog.d(
-            "面板",
-            "面板打开，所在应用 = " + (panelAppPackage ?: "未知") + "，顶部目标 = " + (title ?: "（没认出来）")
-        )
 
-        windowManager.addView(view, params)
+        val added = runCatching { windowManager.addView(view, params) }
+        if (added.isFailure) {
+            SendLog.e(
+                "面板",
+                "面板挂不上屏幕（悬浮窗权限可能已经被撤了）：" +
+                    (added.exceptionOrNull()?.javaClass?.simpleName ?: "未知错误")
+            )
+            controller.release()
+            ballView?.visibility = View.VISIBLE
+            return
+        }
         panelView = view
         panelController = controller
+
+        // 读一次聊天页标题，面板顶部就能显示「将发给：谁」。
+        // 这一读是同步读微信的节点树（几十到几百毫秒），以前放在挂窗口**之前**：球已经藏了、
+        // 面板还没上屏，用户看到的就是「点了球半天没反应」。改成先挂窗口、隔一帧再读
+        // （安全审查 emc-2-032）。读的时候按包名过滤窗口，面板自己这层不算「应用窗口」。
+        handler.postDelayed({
+            if (panelView !== view) return@postDelayed
+            val title = AutoSendService.readChatTitle()
+            controller.setTarget(title)
+            SendLog.d(
+                "面板",
+                "面板打开，所在应用 = " + (panelAppPackage ?: "未知") + "，顶部目标 = " + (title ?: "（没认出来）")
+            )
+        }, PANEL_TITLE_DELAY_MS)
     }
 
     private fun hidePanel() {
@@ -608,6 +661,13 @@ class FloatingBallService : Service() {
                 // 预览页已经关了、聊天页回来了 —— 那一下是用户自己点的，图已经在路上。
                 // 这里同样必须返回 true：退回分享路线会把同一张表情再发一遍（emc-2-016）。
                 showHint(getString(R.string.overlay_album_already_sent))
+                true
+            }
+
+            AutoSendService.AlbumOutcome.UNCERTAIN -> {
+                // 点完格子之后页面换了，可既没读到确认键、也认不出聊天页 —— 发没发出去说不准。
+                // 这里同样必须返回 true：图很可能已经在路上，退回分享就是同一张发两遍（emc-2-031）。
+                showHint(getString(R.string.overlay_album_uncertain))
                 true
             }
 

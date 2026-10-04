@@ -37,8 +37,8 @@ android {
         // versionCode 取「阶段 × 1000 + 构建序号」，跟 versionName 对得上，装新版才能覆盖旧版；
         // 0.1.x 阶段的 versionCode 最高到 416，所以 0.2.000 从 2000 起算。
         // APK 文件名会带上 versionName。
-        versionCode = 2100
-        versionName = "0.2.100"
+        versionCode = 2200
+        versionName = "0.2.200"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

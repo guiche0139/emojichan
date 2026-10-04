@@ -59,7 +59,10 @@ object BusyDialog {
             .setView(view)
             .setCancelable(cancelable)
             .create()
-        dialog.show()
+        // 正在 finish / 已经销毁的 Activity 上 show() 会抛 WindowManager$BadTokenException。
+        // 真碰上就干脆不上屏：返回一个「没 show 过」的把手，update / dismiss 都会因为
+        // isShowing=false 自然跳过（emc-2-032）。
+        if (!activity.isFinishing && !activity.isDestroyed) dialog.show()
         return Progress(dialog, bar, label)
     }
 
@@ -83,7 +86,9 @@ object BusyDialog {
 
     fun dismiss(activity: Activity, progress: Progress) {
         activity.runOnUiThread {
-            if (progress.dialog.isShowing && !activity.isFinishing) progress.dialog.dismiss()
+            // 这里以前在 isFinishing 时直接跳过，等于把这个窗口永远留在系统里（WindowLeaked）。
+            // 收掉是安全的：没 show 过的对话框 dismiss 不会有副作用。
+            runCatching { if (progress.dialog.isShowing) progress.dialog.dismiss() }
         }
     }
 

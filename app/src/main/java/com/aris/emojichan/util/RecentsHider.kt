@@ -2,6 +2,7 @@ package com.aris.emojichan.util
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.os.Build
 import com.aris.emojichan.UiPrefs
 
 /**
@@ -22,7 +23,23 @@ object RecentsHider {
     fun apply(activity: Activity) {
         val hide = UiPrefs.hideFromRecents(activity)
         val tasks = activity.getSystemService(ActivityManager::class.java)?.appTasks ?: return
-        tasks.firstOrNull { it.taskInfo?.taskId == activity.taskId }
-            ?.setExcludeFromRecents(hide)
+        tasks.firstOrNull { taskIdOf(it) == activity.taskId }?.setExcludeFromRecents(hide)
+    }
+
+    /**
+     * 取这个 task 的 id。
+     *
+     * **不能直接写 `taskInfo.taskId`**：那个字段是 API 29 才加进 TaskInfo 的，API 26~28 上
+     * 只有它的前身 RecentTaskInfo.id —— 在 Android 8 / 9 上读它当场 NoSuchFieldError 崩掉
+     * （Android Lint 的 NewApi 报的就是这一条）。两代字段指的是同一个值，按版本二选一。
+     */
+    private fun taskIdOf(task: ActivityManager.AppTask): Int {
+        val info = task.taskInfo ?: return -1
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            info.taskId
+        } else {
+            @Suppress("DEPRECATION")
+            info.id
+        }
     }
 }

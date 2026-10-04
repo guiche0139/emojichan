@@ -13,6 +13,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.R
+import com.aris.emojichan.sender.SendLog
 import com.aris.emojichan.UiPrefs
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.util.BusyDialog
@@ -212,17 +213,26 @@ class StaleEmojiActivity : AppCompatActivity() {
                 if (out == null) {
                     null
                 } else {
-                    out.use { stream ->
-                        viewModel.exportEmojis(ids, stream) { done, total ->
-                            BusyDialog.update(
-                                this@StaleEmojiActivity,
-                                dialog,
-                                done,
-                                total,
-                                getString(R.string.archive_export_progress, done, total)
-                            )
+                    // use{} 退出时那一次 close 也是会抛的（分区写满、SAF 远端卷掉线）：
+                    // 逃出协程就是崩进程，进度框还会留在屏幕上（emc-2-032）。
+                    runCatching {
+                        out.use { stream ->
+                            viewModel.exportEmojis(ids, stream) { done, total ->
+                                BusyDialog.update(
+                                    this@StaleEmojiActivity,
+                                    dialog,
+                                    done,
+                                    total,
+                                    getString(R.string.archive_export_progress, done, total)
+                                )
+                            }
                         }
-                    }
+                    }.onFailure {
+                        SendLog.e(
+                            "导出",
+                            "写备份包失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                        )
+                    }.getOrNull()
                 }
             }
             BusyDialog.dismiss(this@StaleEmojiActivity, dialog)
@@ -258,6 +268,9 @@ class StaleEmojiActivity : AppCompatActivity() {
                 .setMessage(text)
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
+        }.invokeOnCompletion {
+            // 取消 / 半路抛出来时也要把进度框收掉（正常走完时上面已经收过一次）。
+            BusyDialog.dismiss(this@StaleEmojiActivity, dialog)
         }
     }
 
@@ -295,19 +308,29 @@ class StaleEmojiActivity : AppCompatActivity() {
             getString(R.string.delete_progress, 1, ids.size)
         )
         lifecycleScope.launch {
-            val kept = withContext(Dispatchers.IO) {
-                viewModel.deleteEmojisForTool(ids) { done, total ->
-                    BusyDialog.update(
-                        this@StaleEmojiActivity,
-                        dialog,
-                        done,
-                        total,
-                        getString(R.string.delete_progress, done, total)
-                    )
+            // 大库全选后删除会因为 SQL 变量上限（999）抛出来：以前这里一点兜底都没有，
+            // 那就是崩进程 + 进度框永远不消失。失败时按「一张都没删掉」如实汇报（emc-2-032）。
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    viewModel.deleteEmojisForTool(ids) { done, total ->
+                        BusyDialog.update(
+                            this@StaleEmojiActivity,
+                            dialog,
+                            done,
+                            total,
+                            getString(R.string.delete_progress, done, total)
+                        )
+                    }
                 }
             }
-            BusyDialog.dismiss(this@StaleEmojiActivity, dialog)
-            selected.removeAll(ids.toSet())
+            result.exceptionOrNull()?.let {
+                SendLog.e(
+                    "删除",
+                    "批量删除失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                )
+            }
+            val kept = result.getOrElse { ids.size }
+            if (result.isSuccess) selected.removeAll(ids.toSet())
             load()
             val text = buildString {
                 append(
@@ -320,7 +343,7 @@ class StaleEmojiActivity : AppCompatActivity() {
                 if (kept > 0) append(getString(R.string.stale_delete_kept, kept))
             }
             Toast.makeText(this@StaleEmojiActivity, text, Toast.LENGTH_LONG).show()
-        }
+        }.invokeOnCompletion { BusyDialog.dismiss(this@StaleEmojiActivity, dialog) }
     }
 
     /**

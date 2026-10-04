@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.CompressPrefs
 import com.aris.emojichan.R
 import com.aris.emojichan.UiPrefs
+import com.aris.emojichan.sender.SendLog
 import com.aris.emojichan.util.BusyDialog
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
@@ -62,7 +63,8 @@ class CompressActivity : AppCompatActivity() {
         viewModel = ViewModelProvider(this)[EmojiViewModel::class.java]
 
         tempDir = File(cacheDir, "compress-preview")
-        cleanTempDir()
+        // 删文件不进主线程：上一次的预览可能留了几十张图，慢盘上够卡一帧（emc-2-032）。
+        lifecycleScope.launch(Dispatchers.IO) { cleanTempDir() }
 
         findViewById<MaterialToolbar>(R.id.compressToolbar).setNavigationOnClickListener { finish() }
         summary = findViewById(R.id.compressSummary)
@@ -248,6 +250,10 @@ class CompressActivity : AppCompatActivity() {
                 ).show()
             }
             startActivity(android.content.Intent(this@CompressActivity, CompressPreviewActivity::class.java))
+        }.invokeOnCompletion {
+            // 正常走完时上面已经收过一次；这里管的是「用户按返回键取消 / 半路抛出来」那条路 ——
+            // 少了它，进度框会永远留在屏幕上（WindowLeaked，emc-2-032）。
+            BusyDialog.dismiss(this@CompressActivity, dialog)
         }
     }
 
@@ -266,26 +272,43 @@ class CompressActivity : AppCompatActivity() {
         )
         lifecycleScope.launch {
             val report = withContext(Dispatchers.IO) {
-                val out = contentResolver.openOutputStream(uri, "w")
+                // 目标文档被撤权 / 已被删除 / 分区写满时，openOutputStream 会抛
+                // SecurityException / FileNotFoundException / IOException —— 以前这里
+                // 一点兜底都没有（同库别处都包了 runCatching），异常逃出去就是崩进程（emc-2-032）。
+                val out = runCatching { contentResolver.openOutputStream(uri, "w") }
+                    .onFailure {
+                        SendLog.e(
+                            "导出",
+                            "打不开目标文件：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                        )
+                    }
+                    .getOrNull()
                 if (out == null) {
                     ImageExporter.Report(0, targets.size, 0L)
                 } else {
-                    out.use { stream ->
-                        ImageExporter.zip(stream, targets) { done, total ->
-                            BusyDialog.update(
-                                this@CompressActivity,
-                                dialog,
-                                done,
-                                total,
-                                getString(R.string.export_progress, done, total)
-                            )
+                    runCatching {
+                        out.use { stream ->
+                            ImageExporter.zip(stream, targets) { done, total ->
+                                BusyDialog.update(
+                                    this@CompressActivity,
+                                    dialog,
+                                    done,
+                                    total,
+                                    getString(R.string.export_progress, done, total)
+                                )
+                            }
                         }
-                    }
+                    }.onFailure {
+                        SendLog.e(
+                            "导出",
+                            "写 zip 失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                        )
+                    }.getOrElse { ImageExporter.Report(0, targets.size, 0L) }
                 }
             }
             BusyDialog.dismiss(this@CompressActivity, dialog)
             Toast.makeText(this@CompressActivity, exportResult(report), Toast.LENGTH_LONG).show()
-        }
+        }.invokeOnCompletion { BusyDialog.dismiss(this@CompressActivity, dialog) }
     }
 
     private fun exportResult(report: ImageExporter.Report): String = when {
@@ -302,7 +325,8 @@ class CompressActivity : AppCompatActivity() {
         )
     }
 
-    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date())
+    /** 文件名一律 Locale.US：地区数字不是 ASCII 时，文件名在别的应用里会变成乱码（emc-2-032）。 */
+    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
 
     /** 上一次没走完的预览结果留在缓存里，进页面先清掉。 */
     private fun cleanTempDir() {

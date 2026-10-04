@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!--
       Material3 浅色主题：把主要颜色槽位都显式指定，免得各控件（Chip / Switch /
       底部导航）用默认的紫色系、跟品牌色打架。状态栏改成跟背景同色 + 深色图标，
@@ -41,7 +41,9 @@
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">@color/surface</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <!-- windowLightNavigationBar 要 API 27；minSdk 26 上这一行会被忽略，
+             标一句 targetApi 让 Lint 别把它当错误（tools: 只在构建期用，不进包） -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
 
         <!-- 弹窗按钮：M3 默认取 colorPrimary，浅色模式下是那种淡蓝/淡粉，白底上
              几乎看不见 —— 换成本地覆盖，用深色墨字 -->

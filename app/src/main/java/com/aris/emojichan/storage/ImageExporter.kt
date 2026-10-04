@@ -75,24 +75,29 @@ object ImageExporter {
         var failed = 0
         var bytes = 0L
         val used = HashMap<String, Int>()
-        ZipOutputStream(BufferedOutputStream(output)).use { zip ->
-            targets.forEachIndexed { index, target ->
-                onProgress(index + 1, targets.size)
-                val source = File(target.path)
-                try {
-                    if (!source.isFile) throw IllegalStateException("源文件不在了：" + target.path)
-                    zip.putNextEntry(ZipEntry(uniqueName(displayName(target), used)))
-                    source.inputStream().use { input -> input.copyTo(zip) }
-                    zip.closeEntry()
-                    written++
-                    bytes += source.length()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    failed++
-                    runCatching { zip.closeEntry() }
+        // 每一张自己兜异常，但 use{} 的 flush/close 在上面那个 try 之外：目标写满（ENOSPC）、
+        // SAF 中途失效、文件被别的应用占住时 close 会抛，逃到调用方就是崩进程（emc-2-032）。
+        // 已经写进去的条目照旧算数，所以只把异常记下来，Report 还是照常给。
+        runCatching {
+            ZipOutputStream(BufferedOutputStream(output)).use { zip ->
+                targets.forEachIndexed { index, target ->
+                    onProgress(index + 1, targets.size)
+                    val source = File(target.path)
+                    try {
+                        if (!source.isFile) throw IllegalStateException("源文件不在了：" + target.path)
+                        zip.putNextEntry(ZipEntry(uniqueName(displayName(target), used)))
+                        source.inputStream().use { input -> input.copyTo(zip) }
+                        zip.closeEntry()
+                        written++
+                        bytes += source.length()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        failed++
+                        runCatching { zip.closeEntry() }
+                    }
                 }
             }
-        }
+        }.onFailure { it.printStackTrace() }
         return Report(written, failed, bytes)
     }
 
@@ -115,12 +120,14 @@ object ImageExporter {
         targets.forEachIndexed { index, target ->
             onProgress(index + 1, targets.size)
             val source = File(target.path)
+            var document: Uri? = null
             try {
                 if (!source.isFile) throw IllegalStateException("源文件不在了：" + target.path)
                 val name = uniqueName(displayName(target), used)
-                val document = DocumentsContract.createDocument(resolver, treeUri, mimeOf(target.path), name)
+                val created = DocumentsContract.createDocument(resolver, treeUri, mimeOf(target.path), name)
                     ?: throw IllegalStateException("系统没有给出目标文件：" + name)
-                resolver.openOutputStream(document, "w").use { out ->
+                document = created
+                resolver.openOutputStream(created, "w").use { out ->
                     if (out == null) throw IllegalStateException("目标文件打不开：" + name)
                     source.inputStream().use { input -> input.copyTo(out) }
                 }
@@ -128,6 +135,9 @@ object ImageExporter {
                 bytes += source.length()
             } catch (e: Exception) {
                 e.printStackTrace()
+                // 目标文档已经建出来了却写了一半（外置卡满、拔线、单个文件读坏）：留着就是一个
+                // 0 字节或半张的图，用户翻到只会以为图坏了。删掉它，让这次失败干净地失败（emc-2-032）。
+                document?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) } }
                 failed++
             }
         }

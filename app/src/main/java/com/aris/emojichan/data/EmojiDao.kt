@@ -11,6 +11,9 @@ import androidx.room.Update
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
+/** 一条 IN 里最多塞多少个占位符：Android ≤11 的 SQLite 变量上限是 999，留点余量（emc-2-032）。 */
+private const val SQLITE_IN_CHUNK = 900
+
 @Dao
 interface EmojiDao {
     @Query("SELECT * FROM emojis ORDER BY createTime DESC")
@@ -48,10 +51,20 @@ interface EmojiDao {
     suspend fun delete(emoji: EmojiEntity)
 
     @Query("DELETE FROM emojis WHERE id IN (:ids)")
-    suspend fun deleteByIds(ids: List<Long>)
+    suspend fun deleteByIdsRaw(ids: List<Long>)
+
+    /** 大库「全选后删除」一次塞进来的 id 远超 SQLite 变量上限，按块拆开（emc-2-032）。 */
+    @Transaction
+    suspend fun deleteByIds(ids: List<Long>) {
+        ids.chunked(SQLITE_IN_CHUNK).forEach { deleteByIdsRaw(it) }
+    }
 
     @Query("SELECT filePath FROM emojis WHERE id IN (:ids)")
-    suspend fun getFilePathsByIds(ids: List<Long>): List<String>
+    suspend fun getFilePathsByIdsRaw(ids: List<Long>): List<String>
+
+    @Transaction
+    suspend fun getFilePathsByIds(ids: List<Long>): List<String> =
+        ids.chunked(SQLITE_IN_CHUNK).flatMap { getFilePathsByIdsRaw(it) }
 
     /** 数据库当前引用的全部文件路径，用于清理孤儿文件。 */
     @Query("SELECT filePath FROM emojis")
@@ -62,7 +75,11 @@ interface EmojiDao {
     suspend fun getAllNames(): List<String>
 
     @Query("SELECT * FROM emojis WHERE id IN (:ids)")
-    suspend fun getByIds(ids: List<Long>): List<EmojiEntity>
+    suspend fun getByIdsRaw(ids: List<Long>): List<EmojiEntity>
+
+    @Transaction
+    suspend fun getByIds(ids: List<Long>): List<EmojiEntity> =
+        ids.chunked(SQLITE_IN_CHUNK).flatMap { getByIdsRaw(it) }
 
     /** @return 实际更新的行数，0 表示该 id 已不存在。 */
     @Query("UPDATE emojis SET name = :newName WHERE id = :id")
@@ -183,10 +200,29 @@ interface EmojiDao {
 
     /** 批量摘标签（表情 × 标签 的笛卡尔积）。 */
     @Query("DELETE FROM emoji_tags WHERE emojiId IN (:emojiIds) AND tagId IN (:tagIds)")
-    suspend fun deleteTagLinks(emojiIds: List<Long>, tagIds: List<Long>): Int
+    suspend fun deleteTagLinksRaw(emojiIds: List<Long>, tagIds: List<Long>): Int
+
+    /** 两个 IN 都要拆：占位符总数是「表情数 + 标签数」，两边都可能爆（emc-2-032）。 */
+    @Transaction
+    suspend fun deleteTagLinks(emojiIds: List<Long>, tagIds: List<Long>): Int {
+        var removed = 0
+        emojiIds.chunked(SQLITE_IN_CHUNK).forEach { emojiChunk ->
+            tagIds.chunked(SQLITE_IN_CHUNK).forEach { tagChunk ->
+                removed += deleteTagLinksRaw(emojiChunk, tagChunk)
+            }
+        }
+        return removed
+    }
 
     @Query("DELETE FROM emoji_tags WHERE emojiId IN (:emojiIds)")
-    suspend fun deleteTagLinksOf(emojiIds: List<Long>): Int
+    suspend fun deleteTagLinksOfRaw(emojiIds: List<Long>): Int
+
+    @Transaction
+    suspend fun deleteTagLinksOf(emojiIds: List<Long>): Int {
+        var removed = 0
+        emojiIds.chunked(SQLITE_IN_CHUNK).forEach { removed += deleteTagLinksOfRaw(it) }
+        return removed
+    }
 
     @Query("DELETE FROM emoji_tags WHERE tagId = :tagId")
     suspend fun deleteTagLinksOfTag(tagId: Long): Int

@@ -30,7 +30,7 @@
             android:padding="8dp"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_sort"
-            android:tint="?attr/colorOnSurface" />
+            app:tint="?attr/colorOnSurface" />
 
         <!-- 自动发送状态：跟标题同行的最右边。绿点 = 无障碍服务已连上，黄点 = 没开；
              点一下直接去系统无障碍设置（原来那条占一整行的黄色提示条撤了） -->
@@ -282,7 +282,7 @@
                     android:padding="8dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_arrow_up"
-                    android:tint="?attr/colorOnPrimaryContainer"
+                    app:tint="?attr/colorOnPrimaryContainer"
                     android:visibility="gone" />
             </FrameLayout>
 

@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -51,9 +52,12 @@ class AutoSendService : AccessibilityService() {
      * - [ALREADY_SENT]：回头找确认键时，预览页已经关了、聊天页的输入栏回来了 ——
      *   大概率是用户抢在我们前面自己点了那一下。调用方**同样必须当成「走通了」**：
      *   退回去走分享，等于把同一张表情再发一遍。
-     * - [FAILED]：真没走通，可以落回分享路线。
+     * - [FAILED]：真没走通（还站在选图页上），可以落回分享路线。
+     * - [UNCERTAIN]：点完格子之后页面确实换了，但既没读到确认键、也认不出聊天页
+     *   （QQ 上点第一格常常就是直接发）。发没发出去说不准 —— 调用方**绝不能**落回分享路线：
+     *   宁可少发一张，也不能同一张发两遍（emc-2-031）。
      */
-    enum class AlbumOutcome { SENT, STAGED, ALREADY_SENT, FAILED }
+    enum class AlbumOutcome { SENT, STAGED, ALREADY_SENT, FAILED, UNCERTAIN }
 
     /**
      * 粘贴路线的结果。
@@ -192,6 +196,15 @@ class AutoSendService : AccessibilityService() {
 
         /** 判定「输入区多出一张图」时，只看输入框上方这段像素。 */
         private const val PASTE_BAND_PX = 420
+        /**
+         * 粘贴前后量「附近大图」时，带子再往上放宽多少（按屏幕高度的比例算）。
+         *
+         * 粘贴这一下必然把键盘顶起来，输入栏跟着整体上移（差不多一个键盘的高度）。
+         * 「粘贴前」是按键盘没弹起的位置量的，「粘贴后」是按弹起后的位置量的 —— 两条带子一错位，
+         * 图明明进去了也可能数不出来，于是判成失败、退回分享，同一张表情发两遍（emc-2-032，
+         * 和相册路线 ALBUM_BAR_SLACK_RATIO 是同一个道理）。统一往上放宽，前后用同一条带子。
+         */
+        private const val PASTE_KEYBOARD_SLACK_RATIO = 0.45f
         /** 输入框下沿再往下这么多也算「输入区」，微信有时把预览缩略图放进输入框里侧。 */
         private const val PASTE_GAP_PX = 80
         /** 只认够大的图片：输入栏里的小图标（表情、加号）不能被误当成粘进来的图。 */
@@ -224,6 +237,16 @@ class AutoSendService : AccessibilityService() {
         private const val ALBUM_PANEL_DELAY_MS = 700L
         private const val ALBUM_PICKER_DELAY_MS = 1500L
         private const val ALBUM_PREVIEW_DELAY_MS = 1200L
+        /**
+         * 点完格子之后还愿意再看多久（毫秒，接在 [ALBUM_PREVIEW_DELAY_MS] 那一拍后面）。
+         *
+         * QQ 上点格子是「进预览页」，底栏（原图 / 编辑 / 发送）要等这张图 —— 动图尤其慢 ——
+         * 解码完才画出来。原来只看 [ALBUM_PREVIEW_DELAY_MS] 那一眼，正好落在「标题栏画好了、
+         * 底栏还没画」的缝里，于是判失败、按返回、还落回分享路线（emc-2-031）。
+         */
+        private const val ALBUM_SEND_TIMEOUT_MS = 3000L
+        /** 等确认键时的取样间隔（emc-2-031）。 */
+        private const val ALBUM_SEND_POLL_MS = 400L
         /** 摊开「+」面板现场时，从输入框往上多看这么多像素。 */
         private const val ALBUM_PANEL_BAND_PX = 700
         /** 相册首次使用会弹权限框，顺手点掉。 */
@@ -333,6 +356,14 @@ class AutoSendService : AccessibilityService() {
         }
 
         /**
+         * 整套自动化的总时限。里面的每一段本来都有自己的轮询上限，但读树这一步是往
+         * 微信 / QQ 的进程要节点 —— 对方卡住时那个调用会一直不返回，这一轮就永远不结束，
+         * 闸门也就永远不放开：之后每次点悬浮球都是「上一次还没结束」（emc-2-032）。
+         * 60 秒比最慢的一条路（相册路线十几秒）宽得多，正常操作碰不到这条线。
+         */
+        private const val AUTOMATION_TIMEOUT_MS = 60_000L
+
+        /**
          * 备选读法：聊天页面上读不到名字时，点开「更多信息」进聊天信息页，
          * 从对端头像的「昵称头像」文案里取名字，再按返回键回到聊天页。
          * 会切一下页面，所以只在直接读不到时调用。
@@ -342,7 +373,7 @@ class AutoSendService : AccessibilityService() {
             if (!acquireAutomation("读聊天信息页")) return null
             return try {
                 withContext(Dispatchers.Main) {
-                    runCatching { service.doReadChatTitleViaInfo() }
+                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doReadChatTitleViaInfo() } }
                         .onFailure { logFailure("读聊天信息页", it) }
                         .getOrNull()
                 }
@@ -362,7 +393,7 @@ class AutoSendService : AccessibilityService() {
             if (!acquireAutomation("粘贴到聊天")) return PasteOutcome.FAILED
             return try {
                 withContext(Dispatchers.Main) {
-                    runCatching { service.doPasteIntoChat() }
+                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doPasteIntoChat() } }
                         .onFailure { logFailure("粘贴到聊天", it) }
                         .getOrDefault(PasteOutcome.FAILED)
                 }
@@ -373,7 +404,8 @@ class AutoSendService : AccessibilityService() {
 
         /**
          * 相册路线：让微信 / QQ 自己走「+ → 相册 → 第一格 → 确认」。
-         * 不用认聊天对象名字，动图也能保住动画；任何一步没把握都返回 [AlbumOutcome.FAILED]。
+         * 不用认聊天对象名字，动图也能保住动画；点第一格之前任何一步没把握都返回 [AlbumOutcome.FAILED]；
+         * 点了第一格之后页面换了却认不出结果，则返回 [AlbumOutcome.UNCERTAIN]（emc-2-031）。
          * 用户关掉「最后一步自动确认」时会返回 [AlbumOutcome.STAGED]：图已经选好停在预览页，
          * 由他自己点那一下。
          */
@@ -382,7 +414,7 @@ class AutoSendService : AccessibilityService() {
             if (!acquireAutomation("相册路线")) return AlbumOutcome.FAILED
             return try {
                 withContext(Dispatchers.Main) {
-                    runCatching { service.doAlbumRoute() }
+                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doAlbumRoute() } }
                         .onFailure { logFailure("相册路线", it) }
                         .getOrDefault(AlbumOutcome.FAILED)
                 }
@@ -404,7 +436,11 @@ class AutoSendService : AccessibilityService() {
             if (!acquireAutomation("点会话")) return ChatClick.NO_TARGET
             return try {
                 withContext(Dispatchers.Main) {
-                    runCatching { service.doClickChatByName(name, timeoutMs, appPackage) }
+                    runCatching {
+                        withTimeout(timeoutMs + AUTOMATION_TIMEOUT_MS) {
+                            service.doClickChatByName(name, timeoutMs, appPackage)
+                        }
+                    }
                         .onFailure { logFailure("点会话", it) }
                         .getOrDefault(ChatClick.NO_TARGET)
                 }
@@ -695,7 +731,9 @@ class AutoSendService : AccessibilityService() {
             return PasteOutcome.FAILED
         }
         val box = boundsOf(input)
-        val beforeImages = imageNodesNearInput(before, box, screenWidth)
+        // 量图用带子（会顺着键盘上移放宽），点坐标仍用 box —— 两者不能混。
+        val band = pasteBand(box)
+        val beforeImages = imageNodesNearInput(before, band, screenWidth)
         SendLog.d(
             "粘贴",
             "输入框 @" + box.left + "," + box.top + "-" + box.right + "," + box.bottom +
@@ -713,7 +751,7 @@ class AutoSendService : AccessibilityService() {
         delay(PASTE_MENU_DELAY_MS)
         val outcome = clickPasteInMenu()
         if (outcome == MenuOutcome.CLICKED) {
-            return finishPaste(box, beforeImages, inputMinTop, screenWidth, input)
+            return finishPaste(band, beforeImages, inputMinTop, screenWidth, input)
         }
 
         // 尝试 2：手势长按。先轻点一下输入框 —— 输入框没聚焦时（键盘没弹出来）
@@ -733,7 +771,8 @@ class AutoSendService : AccessibilityService() {
         val focused = collectAll()
         val focusedInput = focused.lastOrNull { isEditableNode(it) }
         val pressBox = if (focusedInput != null) boundsOf(focusedInput) else box
-        val pressImages = imageNodesNearInput(focused, pressBox, screenWidth)
+        val pressBand = pasteBand(pressBox)
+        val pressImages = imageNodesNearInput(focused, pressBand, screenWidth)
         SendLog.d(
             "粘贴",
             "聚焦后输入框 @" + pressBox.left + "," + pressBox.top + "-" +
@@ -745,7 +784,7 @@ class AutoSendService : AccessibilityService() {
         if (pressed) {
             delay(PASTE_MENU_DELAY_MS)
             if (clickPasteInMenu() == MenuOutcome.CLICKED) {
-                return finishPaste(pressBox, pressImages, inputMinTop, screenWidth, input)
+                return finishPaste(pressBand, pressImages, inputMinTop, screenWidth, input)
             }
         }
 
@@ -761,7 +800,7 @@ class AutoSendService : AccessibilityService() {
         }.getOrDefault(false)
         SendLog.d("粘贴", "尝试 3 · 输入框 ACTION_PASTE = " + actionPaste)
         if (actionPaste) {
-            val done = finishPaste(pressBox, beforeImages, inputMinTop, screenWidth, target)
+            val done = finishPaste(band, beforeImages, inputMinTop, screenWidth, target)
             if (done != PasteOutcome.FAILED) return done
             SendLog.d("粘贴", "ACTION_PASTE 之后输入区没变化")
         }
@@ -839,7 +878,7 @@ class AutoSendService : AccessibilityService() {
      * 现场却空了，那就是用户抢在前面发出去了。
      */
     private suspend fun finishPaste(
-        box: Rect,
+        band: Rect,
         beforeImages: Int,
         inputMinTop: Int,
         screenWidth: Int,
@@ -847,15 +886,17 @@ class AutoSendService : AccessibilityService() {
     ): PasteOutcome {
         var sawPopup = false
         var sawImage = false
-        val deadline = System.currentTimeMillis() + PASTE_RESULT_DELAY_MS
+        // 用单调时钟：挂钟会被用户改时间 / NTP 校时拽走，那样这个 deadline 要么立刻到期、
+        // 要么空转很久（同文件 doClickChatByName 用的就是 uptimeMillis）。
+        val deadline = SystemClock.uptimeMillis() + PASTE_RESULT_DELAY_MS
         var nodes: List<AccessibilityNodeInfo> = collectAll()
         while (true) {
             if (!hasInputBelow(nodes, inputMinTop)) {
                 sawPopup = true
-            } else if (imageNodesNearInput(nodes, box, screenWidth) > beforeImages) {
+            } else if (imageNodesNearInput(nodes, band, screenWidth) > beforeImages) {
                 sawImage = true
             }
-            if (System.currentTimeMillis() >= deadline) break
+            if (SystemClock.uptimeMillis() >= deadline) break
             delay(PASTE_POLL_MS)
             nodes = collectAll()
         }
@@ -868,7 +909,7 @@ class AutoSendService : AccessibilityService() {
                     delay(PASTE_POLL_MS)
                     val again = collectAll()
                     if (hasInputBelow(again, inputMinTop) &&
-                        imageNodesNearInput(again, box, screenWidth) <= beforeImages
+                        imageNodesNearInput(again, band, screenWidth) <= beforeImages
                     ) {
                         SendLog.d(
                             "粘贴",
@@ -882,7 +923,7 @@ class AutoSendService : AccessibilityService() {
             }
             return clickFinalSend(send, "预览小窗", inputMinTop)
         }
-        val afterImages = imageNodesNearInput(nodes, box, screenWidth)
+        val afterImages = imageNodesNearInput(nodes, band, screenWidth)
         SendLog.d("粘贴", "输入区附近图片节点：" + beforeImages + " → " + afterImages)
         if (afterImages > beforeImages) {
             val send = nodes.firstOrNull {
@@ -1114,27 +1155,70 @@ class AutoSendService : AccessibilityService() {
         delay(ALBUM_PREVIEW_DELAY_MS)
 
         // ④ 预览页 / 选择页上的确认键（微信「发送」、QQ「确定」）
-        val preview = collectAll()
+        //
+        // 点完格子之后不能只看一眼就下结论（emc-2-031）：QQ 上点格子是「进预览页」，
+        // 底栏要等这张图解码完才画出来（动图尤其慢）。实测那次失败就卡在这个缝里 ——
+        // 读树时只剩标题栏，而 110 毫秒之后才来一个换页事件，说明下结论的时候那一页还在切。
+        //
+        // 所以一边等一边判两件事：
+        //   a. 看到确认键 → 走下面的老逻辑；
+        //   b. 选图页的标记（原图 / 预览 / 编辑）全没了、聊天页的输入栏回来了
+        //      → 图已经在路上（QQ 点第一格常常就是直接发），绝不能退回分享；
+        //   c. 等到超时还是两不像 → [AlbumOutcome.UNCERTAIN]：不点，也不退回分享。
+        var preview = collectAll()
         // 相册路线优先用按位置挑的那个（预览页上常有不止一个「发送」）；挑不出来才退回旧的两条路。
-        val send = albumSendButton(preview, inputBox, screenWidth)
+        var send = albumSendButton(preview, inputBox, screenWidth)
             ?: sendButtonOnPage(preview)
             ?: looseSendButton(preview)
+        var waited = ALBUM_PREVIEW_DELAY_MS
+        var backOnChat = false
         if (send == null) {
             SendLog.d(
                 "相册",
-                "没找到「发送」。现场：" + dumpRows(preview, foregroundPackage, 0, raw = true, limit = 16)
+                "第一拍（" + waited + "ms）没看到确认键，继续等：选图标记=" +
+                    stillOnPickerPage(preview) + "，聊天页=" + chatPageIsBack(preview, inputBox, inputTop)
             )
-            // 找不到确认键有两种截然不同的原因，处理方式正相反：
-            //   ① 用户抢在我们前面自己点了「发送」—— 预览页一关，聊天页的输入栏就回来了，
-            //      这时候绝不能退回分享路线，否则同一张表情会再发一遍（emc-2-016）；
-            //   ② 页面根本没走到预览页（还在选图页 / 已经掉回聊天页之前）。这才叫失败。
+        }
+        while (send == null && waited < ALBUM_PREVIEW_DELAY_MS + ALBUM_SEND_TIMEOUT_MS) {
+            delay(ALBUM_SEND_POLL_MS)
+            waited += ALBUM_SEND_POLL_MS
+            preview = collectAll()
+            send = albumSendButton(preview, inputBox, screenWidth)
+                ?: sendButtonOnPage(preview)
+                ?: looseSendButton(preview)
+            // 选图页的标记还在 = 还站在选图页上，继续等确认键（别把它的底栏当成聊天页输入栏）。
+            if (send == null && !stillOnPickerPage(preview) &&
+                chatPageIsBack(preview, inputBox, inputTop)
+            ) {
+                backOnChat = true
+                break
+            }
+        }
+        if (send == null) {
+            SendLog.d(
+                "相册",
+                "等了 " + waited + "ms 也没找到确认键。现场：" +
+                    dumpRows(preview, foregroundPackage, 0, raw = true, limit = 16)
+            )
+            SendLog.d("相册", "页面线索：" + pageIdentity(preview))
+            // 找不到确认键有三种截然不同的原因，处理方式完全不同：
+            //   ① 用户抢在我们前面自己点了「发送」，或者 QQ 点第一格本来就是直接发 ——
+            //      预览页一关，聊天页的输入栏就回来了。绝不能退回分享，否则同一张表情再发一遍
+            //      （emc-2-016 / emc-2-031）；
+            //   ② 页面确实换了，可既没有确认键、也认不出聊天页 —— 发没发出去说不准，
+            //      同样绝不退回分享：宁可少发一张，也不能同一张发两遍（emc-2-031）；
+            //   ③ 还站在选图页上 —— 页面根本没走到预览页。这才叫失败，可以落回分享。
             // 输入框自己不带文本，所以现场 dump（只列有文本的节点）里永远看不见它，必须直接问节点。
-            if (inputBoxNode(preview, inputTop) != null && !stillOnPickerPage(preview)) {
+            if (backOnChat || (inputBoxNode(preview, inputTop) != null && !stillOnPickerPage(preview))) {
                 SendLog.d(
                     "相册",
-                    "不过聊天页的输入栏已经回来了、预览页那些按钮也不在了 —— 图已经发出去了，不退回分享"
+                    "不过聊天页的输入栏已经回来了、选图页那些标记也不在了 —— 图已经发出去了，不退回分享"
                 )
                 return AlbumOutcome.ALREADY_SENT
+            }
+            if (!stillOnPickerPage(preview)) {
+                SendLog.w("相册", "页面换了、又认不出是不是聊天页：既不点，也不退回分享")
+                return AlbumOutcome.UNCERTAIN
             }
             exitAlbumPage()
             return AlbumOutcome.FAILED
@@ -1147,8 +1231,15 @@ class AutoSendService : AccessibilityService() {
         }
         val ok = click(send)
         SendLog.d("相册", "点「" + label + "」@" + boundsOf(send).flattenToString() + " = " + ok)
+        if (!ok) {
+            // 图已经进了应用（上一步点掉了相册第一格、页面已经走到预览页），只是最后一下没点着。
+            // 这种情况返回 FAILED 会落进调用方的「退回分享」分支，同一张表情就发两遍 ——
+            // 本文件那条红线写得很清楚：图已经在应用里的失败只能是 STAGED / UNCERTAIN / ALREADY_SENT。
+            SendLog.w("相册", "点「" + label + "」没点着：图已经在预览页，停手交给用户，不退回分享")
+            return AlbumOutcome.STAGED
+        }
         delay(PASTE_RESULT_DELAY_MS)
-        return if (ok) AlbumOutcome.SENT else AlbumOutcome.FAILED
+        return AlbumOutcome.SENT
     }
 
     /** 聊天页那个输入框：屏幕下半部分里最宽的那个可编辑节点。 */
@@ -1169,6 +1260,57 @@ class AutoSendService : AccessibilityService() {
         nodes.any {
             titleTextOf(it)?.trim() in ALBUM_PICKER_MARK_TEXTS && boundsOf(it).width() > 0
         }
+
+    /**
+     * 聊天页回来了吗（＝图已经在路上）。
+     *
+     * 先看输入框还能不能编辑；再补一条更钝的线索 —— 输入栏那条带子里又出现了能点的小图标
+     * （「表情」「+」这些）。QQ 把选好的图放进输入框之后，那块区域未必还是 EditText，
+     * 只认 isEditable 会漏（emc-2-031 的日志里就漏了）。
+     */
+    private fun chatPageIsBack(
+        nodes: List<AccessibilityNodeInfo>,
+        inputBox: Rect,
+        inputTop: Int
+    ): Boolean {
+        if (inputBoxNode(nodes, inputTop) != null) return true
+        return inputBarIconCount(nodes, inputBox) >= 2
+    }
+
+    /**
+     * 输入栏那条带子里能点的小图标有几个。
+     *
+     * 只当辅证：选图页的底栏（原图 / 编辑 / 发送）也落在这条带子里，所以调用方必须先确认
+     * 「选图页的标记一个都不在」，再问它（emc-2-031）。
+     */
+    private fun inputBarIconCount(nodes: List<AccessibilityNodeInfo>, inputBox: Rect): Int =
+        nodes.count {
+            val r = boundsOf(it)
+            it.isClickable && r.width() > 0 && r.height() > 0 &&
+                r.width() < inputBox.width() && inInputBarBand(r, inputBox)
+        }
+
+    /**
+     * 一页的「身份线索」：最上面那几个有文字的节点，带上类名和可点性。
+     *
+     * 失败日志原来只有文本，认不出那一页到底是预览页、相机页还是聊天页 —— emc-2-031 就卡在
+     * 这里，用户也没看清闪过去的是什么页。类名 + 可点性 + 位置能把这几种分开。
+     * 文本照 [dumpRows] 的老规矩：在可滚动容器里的打码，其余照原样（截到 [MAX_TITLE_LENGTH]）。
+     */
+    private fun pageIdentity(nodes: List<AccessibilityNodeInfo>, limit: Int = 6): String {
+        val rows = nodes.filter {
+            val r = boundsOf(it)
+            r.width() > 0 && r.height() > 0 && !titleTextOf(it).isNullOrBlank()
+        }.sortedBy { boundsOf(it).top }.take(limit).map { node ->
+            val r = boundsOf(node)
+            val raw = titleTextOf(node)!!.trim()
+            val shown = if (hasScrollableAncestor(node)) SendLog.mask(raw) else raw.take(MAX_TITLE_LENGTH)
+            val mark = if (node.isClickable) ",可点" else ""
+            val cls = node.className?.toString()?.substringAfterLast('.') ?: "?"
+            shown + "(" + cls + mark + ")" + "@" + r.top + "[" + r.left + "-" + r.right + "]"
+        }
+        return if (rows.isEmpty()) "没有可读节点" else rows.joinToString(" / ")
+    }
 
     /** 输入栏那条带子上下各放宽多少像素。 */
     private fun barSlack(inputBox: Rect): Int =
@@ -1352,6 +1494,16 @@ class AutoSendService : AccessibilityService() {
         val out = ArrayList<AccessibilityNodeInfo>()
         applicationRoots().forEach { collect(it, out, 0) }
         return out
+    }
+
+    /**
+     * 量图用的那条带子：在输入框的基础上往上放宽（键盘会把它顶上去）。
+     *
+     * 前后两次采样必须用同一条带子，数字才可比 —— 详见 [PASTE_KEYBOARD_SLACK_RATIO]。
+     */
+    private fun pasteBand(box: Rect): Rect {
+        val screenHeight = resources.displayMetrics.heightPixels
+        return Rect(box).apply { top -= (screenHeight * PASTE_KEYBOARD_SLACK_RATIO).toInt() }
     }
 
     /**

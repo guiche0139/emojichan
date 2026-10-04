@@ -40,8 +40,10 @@ object SendLog {
 
     private val lock = Any()
     private val lines = ArrayDeque<String>()
-    private val format = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
-    private val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault())
+    // 时间戳固定按 Locale.ROOT 格式化：日志是给人和 grep 看的，跟着系统语言变没有意义 ——
+    // 泰语环境会写佛历年份（yyyy → 2569），阿拉伯语环境会写出非 ASCII 数字，反而看不清。
+    private val format = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT)
+    private val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT)
     private val writer = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "send-log-writer").apply { isDaemon = true }
     }
@@ -148,9 +150,16 @@ object SendLog {
         lastErrorSave = now
         runCatching {
             dir.mkdirs()
-            val name = "EmojiChan-错误日志-" + stamp.format(Date(now)) + ".txt"
-            val head = "# EmojiChan 错误日志 · 保存于 " + format.format(Date(now)) +
-                " · 当前会话最近 " + lineCount() + " 行\n"
+            // 这两个 SimpleDateFormat 是 object 级单例、天生非线程安全，而 saveErrorLog 会从
+            // 写日志的线程、主线程、Binder 线程一起进来（write 里那次在锁内，这里原来漏了）：
+            // 撞在一起会抛，又被外层 runCatching 吞掉 —— 表现就是错误日志偶尔少一份（emc-2-032）。
+            val name: String
+            val head: String
+            synchronized(lock) {
+                name = "EmojiChan-错误日志-" + stamp.format(Date(now)) + ".txt"
+                head = "# EmojiChan 错误日志 · 保存于 " + format.format(Date(now)) +
+                    " · 当前会话最近 " + lineCount() + " 行\n"
+            }
             File(dir, name).writeText(head + body + "\n")
             dir.listFiles()
                 ?.sortedByDescending { it.name }

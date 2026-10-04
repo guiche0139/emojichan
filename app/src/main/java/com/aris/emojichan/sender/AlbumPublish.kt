@@ -277,6 +277,7 @@ object AlbumPublish {
             val out = context.contentResolver.openOutputStream(uri, "wt")
             if (out == null) {
                 SendLog.e("相册", "拿不到输出流（这条记录可能已经不是我们的了）")
+                dropHalfWritten(context, uri)
                 return null
             }
             out.use { target ->
@@ -284,6 +285,7 @@ object AlbumPublish {
             }
         } catch (e: Exception) {
             SendLog.e("相册", "写内容失败：" + e.javaClass.simpleName + "：" + (e.message?.take(60) ?: ""))
+            dropHalfWritten(context, uri)
             return null
         }
         // 时间列：DATE_TAKEN 是毫秒、DATE_ADDED 是秒。改得动才可能在「时间倒序」里回到最前。
@@ -302,6 +304,24 @@ object AlbumPublish {
         SendLog.d("相册", "写完刷新元数据：改到 " + (rows ?: -1) + " 行（DATE_TAKEN=" + now + "）")
         if (rows == null) return null
         return written
+    }
+
+    /**
+     * 写到一半才发现写不进去：这一行要么是我们刚建出来的（该整行撤掉 —— 别在相册里留一张 0 字节的图），
+     * 要么已经不是我们的了（撤不掉，那就至少保持「写入中」把它藏住）。以前这里直接 return，
+     * 行一直停在 IS_PENDING=1 且 SIZE=0，而 onStart 的补救要求 pendingSize>0，永远修不到它（emc-2-032）。
+     */
+    private fun dropHalfWritten(context: Context, uri: Uri) {
+        val removed = runCatching { context.contentResolver.delete(uri, null, null) }
+            .onFailure {
+                SendLog.e(
+                    "相册",
+                    "撤掉半成品失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                )
+            }
+            .getOrDefault(0)
+        SendLog.d("相册", "撤掉半成品槽位：" + removed + " 行")
+        if (removed <= 0) hide(context, uri)
     }
 
     private fun hide(context: Context, uri: Uri) {

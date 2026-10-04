@@ -25,6 +25,7 @@ import java.text.Collator
 import java.util.Locale
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -411,7 +412,12 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        if (deletableIds.isNotEmpty()) repository.deleteByIds(deletableIds)
+        if (deletableIds.isNotEmpty()) {
+            // 上面那圈已经把文件真删掉了；这一步要是因为协程被取消（用户按了返回键）而跳过，
+            // 库里就留下一批打不开的死图，原图也已经找不回来。删除记录本身很快，放进
+            // NonCancellable 里做完（emc-2-032）。
+            withContext(NonCancellable) { repository.deleteByIds(deletableIds) }
+        }
         return failedCount
     }
 
@@ -813,14 +819,24 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     ): List<Long?> {
         val newIds = ArrayList<Long?>(imported.emojis.size)
         imported.emojis.forEachIndexed { index, emoji ->
-            val id = runCatching { repository.insert(emoji) }.getOrNull()
+            // 挂标签也要算进「这一张成没成」：它同样是数据库写操作（SQL 变量上限、磁盘满都会抛），
+            // 以前它在 runCatching 之外 —— 一抛就被 importLibrary 统一折成「导入失败」，
+            // 可那时旧库已经清空、前面几张也已经进去了（emc-2-032）。
+            val id = runCatching {
+                val inserted = repository.insert(emoji)
+                if (inserted > 0L) {
+                    attachTags(inserted, imported.tagsOf.getOrElse(index) { emptyList() }, tagIds)
+                }
+                inserted
+            }.getOrNull()
             if (id == null || id <= 0L) {
+                // 记录落了库、标签没挂上（或者压根没落库）：两边都清掉，别留一张打不开的空图。
+                if (id != null && id > 0L) runCatching { repository.deleteByIds(listOf(id)) }
                 ImageUtil.deleteFile(emoji.filePath)
                 newIds.add(null)
                 return@forEachIndexed
             }
             newIds.add(id)
-            attachTags(id, imported.tagsOf.getOrElse(index) { emptyList() }, tagIds)
         }
         return newIds
     }

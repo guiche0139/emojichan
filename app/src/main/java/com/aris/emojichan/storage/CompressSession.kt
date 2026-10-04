@@ -26,20 +26,28 @@ object CompressSession {
 
     private val pending = mutableListOf<PendingCompress>()
 
+    // 这几把锁是补上来的：压缩页在 IO 线程上算完结果才 put，而预览页（同一个进程、同一个
+    // object）随时可能 drop 或 clear，交错时 ArrayList 会抛 ConcurrentModificationException
+    // 或者干脆丢一次结果（emc-2-032）。临界区都只有几个赋值，锁的代价可以忽略。
+    @Synchronized
     fun put(items: List<PendingCompress>) {
-        clear()
+        pending.clear()
         pending += items
     }
 
+    @Synchronized
     fun items(): List<PendingCompress> = pending.toList()
 
+    @get:Synchronized
     val savedBytes: Long get() = pending.sumOf { it.savedBytes }
 
+    @Synchronized
     fun clear() {
         pending.clear()
     }
 
     /** 放弃这次结果：把缓存里的压缩文件删掉，原图一张不动。 */
+    @Synchronized
     fun drop() {
         pending.forEach { runCatching { File(it.compressed).delete() } }
         pending.clear()

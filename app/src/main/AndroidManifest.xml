@@ -2,9 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!--
       图片一律通过系统的「选择图片」（ACTION_GET_CONTENT）拿，
-      写相册走 MediaStore 自己的私有条目 —— 都不需要任何存储权限。
-      emc-1-021：原来那句 READ_MEDIA_IMAGES 只会把导入卡死在 Android 14 的
-      「仅选择的照片」上，删掉之后权限面板干净了，导入也不再问用户要权限。
+      写相册走 MediaStore 自己的私有条目 —— 这两条路都不需要存储权限。
+      emc-1-021：曾经整片读过相册，导入会卡死在 Android 14 的「仅选择的照片」上，所以删过。
+      后来 emc-2-008 为了「导入时问得出原文件名」又把相册读权限加了回来（见下面那条声明）：
+      只在用户点「允许读取相册」时才申请，不授权也能照常导入。
     -->
     <!--
       「显示在其他应用上层」，悬浮球必需。
@@ -60,6 +61,7 @@
     <application
         android:name=".EmojiChanApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

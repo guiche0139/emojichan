@@ -170,6 +170,8 @@
     <string name="overlay_album_staged">图已选好并停在预览页，请点「发送 / 确定」</string>
     <string name="overlay_album_already_sent">可能已发送，请在聊天里确认；如未收到可重新发送</string>
     <string name="overlay_album_failed">相册方式未成功，已改用分享</string>
+    <!-- 相册路线点完第一格之后页面换了、但认不出结果：不自动退回分享，免得同一张发两遍（emc-2-031） -->
+    <string name="overlay_album_uncertain">这一步没看准，图可能已发出：请在聊天里确认，没收到再重发</string>
     <string name="overlay_album_check_failed">相册里排第一的不是这张表情，已改用分享（原因见发送日志）</string>
     <string name="overlay_album_check_unknown">未确认相册第一张是这张表情（缺少「读取相册」权限），仍按相册方式发送</string>
     <string name="overlay_confirm_manual">已停在最后一步，按设置不自动点击，请自行点「发送 / 确定」</string>
@@ -662,6 +664,7 @@
     <string name="search_scan_files">正在比对文件内容 %1$d / %2$d 张…</string>
     <string name="search_scan_frames">正在比对画面 %1$d / %2$d 张…</string>
     <string name="search_scan_stopped">已停止比对</string>
+    <string name="search_scan_failed">比对出错，已停在这一轮</string>
     <string name="search_scan_start">开始检测</string>
     <string name="search_scan_again">重新检测</string>
     <string name="search_start_title">查一查有没有重复的表情</string>

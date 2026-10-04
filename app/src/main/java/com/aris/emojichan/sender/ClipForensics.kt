@@ -121,7 +121,9 @@ object ClipForensics {
             builder.append("\n    条目 ").append(i)
                 .append("：uri=").append(item.uri?.toString() ?: "-")
                 .append(" ｜ text=").append(
-                    if (text == null) "-" else "「" + text.take(40) + "」(长度 " + text.length + ")"
+                    // 剪贴板里常常是聊天记录 / 短信 / 刚复制的正文，而这份日志是能被用户
+                    // 一键导出、分享出去的：只留指纹和字数，不写前 40 个字（emc-2-032）。
+                    if (text == null) "-" else SendLog.mask(text.toString())
                 )
                 .append(" ｜ html=").append(if (item.htmlText == null) "无" else "有")
                 .append(" ｜ intent=").append(if (item.intent == null) "无" else "有")

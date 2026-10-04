@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12（API 31）起，云备份与「换机直传」的内容改由这份规则描述
+  （manifest 里 android:dataExtractionRules 指过来）。
+
+  android:allowBackup="false" 在 12 及以上依然有效 —— 两边都关；这里再显式排除一遍，
+  是为了**以后**：万一哪天有人把 allowBackup 改回 true，表情库、发送日志（里面有聊天
+  对象的名字）和那份「最近任务隐藏」之类的偏好也不会被悄悄传上云或直传出去。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

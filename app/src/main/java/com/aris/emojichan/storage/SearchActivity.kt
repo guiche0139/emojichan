@@ -15,6 +15,7 @@ import com.aris.emojichan.R
 import com.aris.emojichan.SimilarPrefs
 import com.aris.emojichan.UiPrefs
 import com.aris.emojichan.data.ImageFeatureEntity
+import com.aris.emojichan.sender.SendLog
 import com.aris.emojichan.util.BusyDialog
 import com.aris.emojichan.util.FileHash
 import com.aris.emojichan.viewmodel.EmojiViewModel
@@ -254,6 +255,17 @@ class SearchActivity : AppCompatActivity() {
                     Toast.LENGTH_SHORT
                 ).show()
                 // 停在这一轮：上一轮的结果（如果有）照旧留着，没有结果就把「开始检测」还回去
+                renderEmpty()
+                return@launch
+            } catch (e: Exception) {
+                // 这一段要读文件、解码图片：单张坏图、外置存储掉线、解码 OOM 都会抛。
+                // 以前这里只接取消，别的异常直接掀翻整个协程 —— 界面卡死在进度框上（emc-2-032）。
+                SendLog.e("查重", "比对失败：" + e.javaClass.simpleName + " " + (e.message ?: ""))
+                if (fresh.isNotEmpty()) {
+                    withContext(NonCancellable) { viewModel.saveImageFeatures(fresh.values.toList()) }
+                }
+                BusyDialog.dismiss(this@SearchActivity, dialog)
+                Toast.makeText(this@SearchActivity, R.string.search_scan_failed, Toast.LENGTH_SHORT).show()
                 renderEmpty()
                 return@launch
             }

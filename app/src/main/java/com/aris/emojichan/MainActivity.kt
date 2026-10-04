@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.os.Environment
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -752,12 +753,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 把悬浮球服务拉起来。Android 8 起在后台调 startService 会抛 IllegalStateException，
+     * 部分 ROM 更严 —— 这里不接住就是崩进程（同库 BallTileService 那处一直是包着的，emc-2-032）。
+     *
+     * @return 真的发出去了才返回 true。
+     */
+    private fun startFloatingBall(snapToEdge: Boolean = false): Boolean =
+        runCatching { FloatingBallService.start(this, snapToEdge) }
+            .onFailure {
+                SendLog.w(
+                    "球",
+                    "拉起悬浮球服务失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                )
+            }
+            .isSuccess
+
     /** 球正挂在屏幕上时，改大小 / 换样式得重挂一次才看得见。 */
     private fun refreshBallIfRunning(snapToEdge: Boolean = false) {
         if (!FloatingBallService.isRunning) return
         FloatingBallService.stop(this)
         Handler(Looper.getMainLooper()).postDelayed({
-            if (!isFinishing && !isDestroyed) FloatingBallService.start(this, snapToEdge)
+            if (!isFinishing && !isDestroyed) startFloatingBall(snapToEdge)
         }, 250L)
     }
 
@@ -858,16 +875,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 分享里的一段文本：只有它确实像一个本地路径 / content 地址时才当图片用。 */
+    /**
+     * 分享里的一段文本：只有它确实像一个本地路径 / content 地址时才当图片用。
+     *
+     * 任何应用都能用 ACTION_SEND + EXTRA_TEXT 递一段纯路径进来，所以 file:// 与裸路径只认
+     * 「公共图片目录里的文件」—— 否则外部应用能让本应用去读它自己读不到的东西（emc-2-032）。
+     */
     private fun sharedTextToUri(text: String): Uri? {
         val trimmed = text.trim()
         // 路径里不会有空白；有空白的多半是真正的分享文字，直接放过去（不从 URL 里猜图片）。
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
         return when {
-            trimmed.startsWith("content://") || trimmed.startsWith("file://") -> Uri.parse(trimmed)
-            trimmed.startsWith("/") -> Uri.fromFile(File(trimmed))
+            trimmed.startsWith("content://") -> Uri.parse(trimmed)
+            trimmed.startsWith("file://") -> Uri.parse(trimmed).takeIf { isInPublicMediaDir(it.path) }
+            trimmed.startsWith("/") -> Uri.fromFile(File(trimmed)).takeIf { isInPublicMediaDir(trimmed) }
             else -> null
         }
+    }
+
+    /** 裸路径 / file:// 只放行公共图片目录（Pictures、DCIM、Download）下的文件。 */
+    @Suppress("DEPRECATION")
+    private fun isInPublicMediaDir(path: String?): Boolean {
+        if (path.isNullOrEmpty()) return false
+        val file = runCatching { File(path).canonicalFile }.getOrNull() ?: return false
+        val roots = listOf(
+            Environment.DIRECTORY_PICTURES,
+            Environment.DIRECTORY_DCIM,
+            Environment.DIRECTORY_DOWNLOADS
+        ).mapNotNull { dir ->
+            runCatching { Environment.getExternalStoragePublicDirectory(dir).canonicalFile }.getOrNull()
+        }
+        return roots.any { file.path.startsWith(it.path + File.separator) }
     }
 
     /**
@@ -895,8 +933,18 @@ class MainActivity : AppCompatActivity() {
             is Array<*> -> value.joinToString(", ") { describeSharedValue(it) }
             else -> value.toString()
         }
-        return value.javaClass.simpleName + "(" + text.take(160) + ")"
+        // 别的应用分享过来的正文就是用户自己的内容，日志里只留指纹（emc-2-032）；
+        // 路径 / 网址得留原文，不然「这张图为什么没认出来」就查不下去了。
+        val shown = if (value is CharSequence && !value.toString().looksLikeAddress()) {
+            SendLog.mask(value.toString())
+        } else {
+            text.take(160)
+        }
+        return value.javaClass.simpleName + "(" + shown + ")"
     }
+
+    /** 看着像路径或网址：这类值得留原文，它们本来也不是聊天内容。 */
+    private fun CharSequence.looksLikeAddress(): Boolean = startsWith("/") || contains("://")
 
     /** 在设置页按返回先回表情页，而不是直接退出应用。 */
     private fun setupBackPress() {
@@ -1035,7 +1083,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        FloatingBallService.start(this)
+        startFloatingBall()
         notifyBallStateChanged()
         // 无障碍服务没开时球会一直在屏幕上，文案得说清楚差别，否则用户会以为坏了。
         Toast.makeText(
@@ -2230,16 +2278,22 @@ class MainActivity : AppCompatActivity() {
                 if (out == null) {
                     ImageExporter.Report(0, targets.size, 0L)
                 } else {
-                    out.use { stream ->
-                        ImageExporter.zip(stream, targets) { done, total ->
-                            showProgress(dialog, R.string.export_progress, done, total)
+                    // use{} 退出时那一次 close 也会抛（分区写满、SAF 远端卷掉线）：
+                    // 逃出协程就是崩进程，进度框还会留在屏幕上（emc-2-032）。
+                    runCatching {
+                        out.use { stream ->
+                            ImageExporter.zip(stream, targets) { done, total ->
+                                showProgress(dialog, R.string.export_progress, done, total)
+                            }
                         }
-                    }
+                    }.onFailure {
+                        SendLog.e("导出", "写 zip 失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: ""))
+                    }.getOrElse { ImageExporter.Report(0, targets.size, 0L) }
                 }
             }
             BusyDialog.dismiss(this@MainActivity, dialog)
             Toast.makeText(this@MainActivity, exportResultText(report, zip = true), Toast.LENGTH_LONG).show()
-        }
+        }.invokeOnCompletion { BusyDialog.dismiss(this@MainActivity, dialog) }
     }
 
     private fun runExportFolder(treeUri: Uri) {
@@ -2278,7 +2332,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date())
+    // 文件名一律 Locale.US：某些地区（阿拉伯语、印地语）的数字不是 ASCII，拼进文件名后
+    // 别的应用/电脑上会变成一堆看不懂的符号（emc-2-032）。
+    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
 
     private fun observeViewModel() {
         lifecycleScope.launch {
@@ -2372,11 +2428,19 @@ class MainActivity : AppCompatActivity() {
                 if (out == null) {
                     null
                 } else {
-                    out.use { stream ->
-                        viewModel.exportLibrary(stream) { done, total ->
-                            showProgress(dialog, R.string.archive_export_progress, done, total)
+                    // 同上：收尾那一次 close 失败也要接住，不然是崩进程 + 进度框不消失（emc-2-032）。
+                    runCatching {
+                        out.use { stream ->
+                            viewModel.exportLibrary(stream) { done, total ->
+                                showProgress(dialog, R.string.archive_export_progress, done, total)
+                            }
                         }
-                    }
+                    }.onFailure {
+                        SendLog.e(
+                            "导出",
+                            "写备份包失败：" + it.javaClass.simpleName + "：" + (it.message?.take(60) ?: "")
+                        )
+                    }.getOrNull()
                 }
             }
             BusyDialog.dismiss(this@MainActivity, dialog)
@@ -2405,7 +2469,7 @@ class MainActivity : AppCompatActivity() {
                 .setMessage(text)
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
-        }
+        }.invokeOnCompletion { BusyDialog.dismiss(this@MainActivity, dialog) }
     }
 
     /** 导入：合并还是覆盖，先问一句。 */
@@ -2817,7 +2881,7 @@ class MainActivity : AppCompatActivity() {
         var justStarted = false
         if (pendingOverlayStart && Settings.canDrawOverlays(this)) {
             pendingOverlayStart = false
-            FloatingBallService.start(this)
+            startFloatingBall()
             justStarted = true
             Toast.makeText(this, R.string.overlay_started, Toast.LENGTH_LONG).show()
         }
@@ -2826,7 +2890,7 @@ class MainActivity : AppCompatActivity() {
         if (!justStarted && SenderPrefs.ballOn(this) &&
             Settings.canDrawOverlays(this) && !FloatingBallService.isRunning
         ) {
-            FloatingBallService.start(this)
+            startFloatingBall()
             justStarted = true
         }
         if (justStarted) {

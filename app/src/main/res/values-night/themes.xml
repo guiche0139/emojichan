@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!--
       深色模式：只换父主题和状态栏/导航栏那两行开关，颜色槽位引用的是同一批名字
       （palette_* 在 values-night/colors.xml 里已经换成深色版），所以主题色 overlay
@@ -33,7 +33,8 @@
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">@color/surface</item>
-        <item name="android:windowLightNavigationBar">false</item>
+        <!-- 同 values/themes.xml：这个属性 API 27 起才有 -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
 
         <!-- 弹窗按钮换成本地覆盖（见 values/themes.xml），用深色墨字 -->
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.EmojiChan.Dialog</item>

@@ -2,6 +2,7 @@ package com.aris.emojichan.util
 
 import android.content.Context
 import com.aris.emojichan.data.EmojiEntity
+import com.aris.emojichan.sender.SendLog
 import com.aris.emojichan.data.EmojiTagCrossRef
 import com.aris.emojichan.data.TagEntity
 import com.aris.emojichan.storage.SimilarIgnore
@@ -74,6 +75,31 @@ object EmojiArchive {
 
     /** 清单条目最多允许这么大，免得一个畸形包拿超大清单把内存撑爆。 */
     private const val MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+
+    /** 解包时单张图的落盘上限：和其它导入路径一个量级（ImageUtil.MAX_IMPORT_BYTES）。 */
+    private const val MAX_ENTRY_BYTES = 20L * 1024 * 1024
+
+    /** 解包时一整包的总量上限：正常备份到不了，炸弹包会先撞这里。 */
+    private const val MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024
+
+    /**
+     * 把当前 zip 条目写进 [target]，边写边数：超过单条上限、或者加上这一条就超过整包总量上限时
+     * 立刻停下返回 false，半成品留给调用方删掉。清单里的体积字段是包自己写的，不能当护栏（emc-2-032）。
+     */
+    private fun copyEntryCapped(zip: InputStream, target: File, alreadyBytes: Long): Boolean {
+        var written = 0L
+        FileOutputStream(target).use { out ->
+            val buffer = ByteArray(COPY_BUFFER)
+            while (true) {
+                val n = zip.read(buffer)
+                if (n <= 0) break
+                written += n
+                if (written > MAX_ENTRY_BYTES || alreadyBytes + written > MAX_TOTAL_BYTES) return false
+                out.write(buffer, 0, n)
+            }
+        }
+        return true
+    }
 
     /** 条目名里那段「安全名」的长度上限。 */
     private const val MAX_NAME_IN_ENTRY = 40
@@ -192,7 +218,8 @@ object EmojiArchive {
         }
 
         val zip = ZipOutputStream(BufferedOutputStream(output, COPY_BUFFER))
-        return try {
+        var error: Error? = null
+        try {
             zip.putNextEntry(ZipEntry(MANIFEST_NAME))
             zip.write(buildManifest(plan, tags, links, appVersion, ignoredInPack).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
@@ -206,22 +233,24 @@ object EmojiArchive {
                 done++
                 onProgress(done, total)
             }
-            Report(
-                emojis = written, failed = failed, tags = tags.size, bytes = bytes,
-                ignored = ignoredInPack.size
-            )
         } catch (e: Exception) {
             // 写到一半出错：包已经不完整，不再往下写，照实返回已经落进包里的数量。
             e.printStackTrace()
-            Report(
-                emojis = written, failed = failed, tags = tags.size, bytes = bytes,
-                ignored = ignoredInPack.size, error = Error.IO
-            )
-        } finally {
-            // 必须 finish() 才会写下中央目录；出错时也试一把（失败就算了，反正已经报了 IO）。
-            runCatching { zip.finish() }
-            runCatching { zip.flush() }
+            error = Error.IO
         }
+        // 必须 finish() 才会写下中央目录。它的成败也算数 —— 以前这里把收尾整个吞掉，于是
+        // 「条目都写成功、只有收尾失败」会返回一份 error=null 的成功报告：用户以为手里有备份，
+        // 等真要导入时才发现这包连中央目录都没有（emc-2-032）。
+        val finished = runCatching { zip.finish() }.isSuccess
+        val flushed = runCatching { zip.flush() }.isSuccess
+        if (!finished || !flushed) {
+            SendLog.e("备份", "包收尾失败：中央目录没写下去，这个包导入端认不出来")
+            error = Error.IO
+        }
+        return Report(
+            emojis = written, failed = failed, tags = tags.size, bytes = bytes,
+            ignored = ignoredInPack.size, error = error
+        )
     }
 
     /**
@@ -352,7 +381,14 @@ object EmojiArchive {
                         )
                         try {
                             // zip 在这里同样不能 use，它是整趟共用的那条流。
-                            FileOutputStream(target).use { out -> zip.copyTo(out, COPY_BUFFER) }
+                            // 大小要自己数：清单里的体积字段是包自己写的，不能拿它当护栏 ——
+                            // 一个高压缩比的炸弹包能顺着这条流把私有目录写满（emc-2-032）。
+                            if (!copyEntryCapped(zip, target, bytes)) {
+                                ImageUtil.deleteFile(target.absolutePath)
+                                SendLog.e("备份", "这一条超出上限，跳过：" + zipEntry.name)
+                                failed++
+                                continue
+                            }
                             bytes += target.length()
                             // 清单里的体积/宽高可能是 0（老备份、上游没写）：落盘后用真实值补上，
                             // 否则列表里的体积和排版会是一片 0。

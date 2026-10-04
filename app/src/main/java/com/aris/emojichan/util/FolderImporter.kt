@@ -79,6 +79,7 @@ object FolderImporter {
         val queue = ArrayDeque<Pair<String, List<String>>>()
         queue.add(rootId to listOf(rootName))
         var remaining = MAX_FILES
+        var truncated = false
 
         while (queue.isNotEmpty() && remaining > 0) {
             val (docId, names) = queue.removeFirst()
@@ -114,13 +115,23 @@ object FolderImporter {
                             onScanned(entries.size)
                         }
                     }
+                    // 循环停下有两个原因：扫完了，或者配额正好用光。后者得再看一眼后面还有没有图 ——
+                    // 真有才是截断；目录里恰好 20000 张时不该报「有图没被导进来」（emc-2-032）。
+                    if (remaining == 0) {
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(2).orEmpty().startsWith("image/")) {
+                                truncated = true
+                                break
+                            }
+                        }
+                    }
                 }
             }
             queue.addAll(dirs)
         }
         // 从早到晚交出去：导入时 createTime 记的是当下，网格按它倒序，
         // 于是源文件时间最新的那批最后入库、排在最前（用户 m11668 第 4 条）。sortedBy 是稳定排序。
-        return Plan(entries.sortedBy { it.lastModified }, truncated = remaining == 0)
+        return Plan(entries.sortedBy { it.lastModified }, truncated = truncated)
     }
 
     /**

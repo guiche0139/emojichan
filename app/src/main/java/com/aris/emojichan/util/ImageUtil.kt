@@ -11,6 +11,7 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.aris.emojichan.R
+import com.aris.emojichan.sender.SendLog
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -83,6 +84,8 @@ object ImageUtil {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            // 失败原因也要落进日志：以前只在 logcat 里，用户报「导入失败」时无从下手。
+            SendLog.e("导入", "读取失败：" + uri + " → " + e)
             // 写了一半的文件绝不能留在库里 —— 列表里会多出一张打不开的空图（emc-1-019）。
             destFile?.let { if (it.exists()) it.delete() }
             null

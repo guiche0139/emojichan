@@ -2,6 +2,7 @@ package com.aris.emojichan
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -59,6 +60,8 @@ import com.aris.emojichan.util.BusyDialog
 import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.EmojiImport
 import com.aris.emojichan.util.ImageUtil
+import com.aris.emojichan.util.ImportOrder
+import com.aris.emojichan.util.RecentsHider
 import com.aris.emojichan.util.SourceFiles
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
@@ -72,6 +75,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.slider.Slider
+import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,10 +103,14 @@ private const val SUGGESTION_GAP_DP = 4
 
 /** 筛选条一次刷新要用到的几项条件。 */
 private data class FilterState(
+    /** 按名字序的一份：筛选条上那几颗已选标签按它取名字。 */
     val tags: List<TagEntity>,
+    /** 按用量序的一份（`viewModel.tagPanelTags`）：标签面板铺开的顺序，用户 m11668 第 7 条。 */
+    val panelTags: List<TagEntity>,
     val ids: Set<Long>,
     val tagModes: Map<Long, TagMode>,
-    val favoritesOnly: Boolean
+    val favoritesOnly: Boolean,
+    val recentOnly: Boolean
 )
 
 /** 搜索补全的一条候选：[label] 是列表里显示的，[insert] 是点下去真正写进搜索框的。 */
@@ -759,23 +767,31 @@ class MainActivity : AppCompatActivity() {
      * 别的应用分享图片 / GIF 过来（清单里注册了 ACTION_SEND / SEND_MULTIPLE + image 类型）。
      * 收下就入库，落到表情页，让用户马上看到 —— 不做「要不要导入」的二次确认，
      * 分享本身就是用户的确认动作。
+     *
+     * 上游给的东西五花八门（emc-2-027）：微信规规矩矩在 EXTRA_STREAM 里放一个 content Uri，
+     * QQ 放的是字符串路径，还有应用只往 ClipData / data 里放。所以这里不认「标准写法」，
+     * 只认「里面有没有一个能读的图片地址」。
      */
     private fun handleShareIntent(intent: Intent?) {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
 
-        @Suppress("DEPRECATION")
-        val uris: List<android.net.Uri> = if (action == Intent.ACTION_SEND) {
-            listOfNotNull(intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))
-        } else {
-            intent.getParcelableArrayListExtra<android.net.Uri>(Intent.EXTRA_STREAM) ?: emptyList()
-        }
+        // 现场先记一笔：分享进来没反应时，这份日志是唯一能看出上游给了什么的东西。
+        logShareIntent(intent)
+        val uris = extractSharedUris(intent)
 
         // 处理完就把这次分享从 Intent 上抹掉：转屏、回前台时 onCreate 拿到的是同一个
         // Intent，不抹掉就会把同一张图反复导进来。
         intent.action = null
         intent.removeExtra(Intent.EXTRA_STREAM)
-        if (uris.isEmpty()) return
+        intent.clipData = null
+        if (uris.isEmpty()) {
+            // 以前这里是静默 return：用户选了 Emojichan，界面上什么都没发生，也没留下任何线索。
+            SendLog.e("分享", "没有从分享里解出任何图片地址，放弃导入")
+            Toast.makeText(this@MainActivity, R.string.share_import_empty, Toast.LENGTH_LONG).show()
+            return
+        }
+        SendLog.d("分享", "解出 " + uris.size + " 个地址，开始导入")
 
         showEmojiPage()
         lifecycleScope.launch {
@@ -809,6 +825,77 @@ class MainActivity : AppCompatActivity() {
         } else {
             bottomNav.selectedItemId = R.id.tab_emoji
         }
+    }
+
+    /**
+     * 从分享 Intent 里尽量把图片地址抠出来。
+     *
+     * 标准写法是 EXTRA_STREAM 里放一个 content Uri，但各家应用并不老实：QQ 放的是字符串
+     * 路径（有的是 content 字符串，有的还塞进 ArrayList），还有应用只往 ClipData / data
+     * 里放。只认「EXTRA_STREAM 是 Parcelable Uri」这一种，QQ 的分享进来就一个都解不出来
+     * （emc-2-027）。宁可多收：解出来的东西还要过 ImageUtil 的文件头检查，不是图片进不了库。
+     */
+    private fun extractSharedUris(intent: Intent): List<Uri> {
+        val out = LinkedHashSet<Uri>()
+        collectSharedUris(intent.extras?.get(Intent.EXTRA_STREAM), out)
+        intent.clipData?.let { collectSharedUris(it, out) }
+        collectSharedUris(intent.data, out)
+        // 兜底：个别应用把路径塞在 EXTRA_TEXT 里；真正的分享文字会被下面的 scheme 检查挡掉。
+        if (out.isEmpty()) collectSharedUris(intent.getStringExtra(Intent.EXTRA_TEXT), out)
+        return out.toList()
+    }
+
+    private fun collectSharedUris(raw: Any?, out: MutableCollection<Uri>) {
+        when (raw) {
+            null -> Unit
+            is Uri -> out += raw
+            is ClipData -> for (i in 0 until raw.itemCount) raw.getItemAt(i).uri?.let { out += it }
+            is CharSequence -> sharedTextToUri(raw.toString())?.let { out += it }
+            is Iterable<*> -> raw.forEach { collectSharedUris(it, out) }
+            is Array<*> -> raw.forEach { collectSharedUris(it, out) }
+            // 认不出来也留个痕迹：下回遇到同样的分享，日志里能直接看到上游塞的是什么类型。
+            else -> SendLog.w("分享", "EXTRA_STREAM 里是 " + raw.javaClass.name + "，不认识")
+        }
+    }
+
+    /** 分享里的一段文本：只有它确实像一个本地路径 / content 地址时才当图片用。 */
+    private fun sharedTextToUri(text: String): Uri? {
+        val trimmed = text.trim()
+        // 路径里不会有空白；有空白的多半是真正的分享文字，直接放过去（不从 URL 里猜图片）。
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
+        return when {
+            trimmed.startsWith("content://") || trimmed.startsWith("file://") -> Uri.parse(trimmed)
+            trimmed.startsWith("/") -> Uri.fromFile(File(trimmed))
+            else -> null
+        }
+    }
+
+    /**
+     * 把这次分享的现场整条写进日志：action / type / 每个 extra 的类型和取值。
+     * 「某某应用分享过来没反应」时，只有这一行能对上号。
+     */
+    private fun logShareIntent(intent: Intent) {
+        SendLog.d(
+            "分享",
+            "收到分享：action=" + intent.action + " type=" + intent.type +
+                " clipData=" + (intent.clipData?.itemCount ?: 0) + " data=" + intent.data
+        )
+        val extras = intent.extras ?: return
+        extras.keySet().forEach { key ->
+            SendLog.d("分享", "  " + key + " = " + describeSharedValue(extras.get(key)))
+        }
+    }
+
+    private fun describeSharedValue(value: Any?): String {
+        if (value == null) return "null"
+        val text = when (value) {
+            is Uri -> value.toString()
+            is CharSequence -> value.toString()
+            is Iterable<*> -> value.joinToString(", ") { describeSharedValue(it) }
+            is Array<*> -> value.joinToString(", ") { describeSharedValue(it) }
+            else -> value.toString()
+        }
+        return value.javaClass.simpleName + "(" + text.take(160) + ")"
     }
 
     /** 在设置页按返回先回表情页，而不是直接退出应用。 */
@@ -1469,19 +1556,37 @@ class MainActivity : AppCompatActivity() {
             // tagModes 必须算一路：它一变，筛选条上标签 chip 的前缀（& / | / !）得跟着换
             combine(
                 viewModel.tags,
+                // 面板和筛选条要两份不同的顺序，所以这里嵌一层：外面这层只有 5 个位置，
+                // 再塞一路就超了（用户 m11668 第 7 条）
+                combine(viewModel.tagPanelTags, viewModel.recentOnly) { panel, recent -> panel to recent },
                 viewModel.selectedTagIds,
                 viewModel.tagModes,
                 viewModel.favoritesOnly
-            ) { tags, ids, tagModes, favorites -> FilterState(tags, ids, tagModes, favorites) }
+            ) { tags, panelAndRecent, ids, tagModes, favorites ->
+                FilterState(
+                    tags = tags,
+                    panelTags = panelAndRecent.first,
+                    ids = ids,
+                    tagModes = tagModes,
+                    favoritesOnly = favorites,
+                    recentOnly = panelAndRecent.second
+                )
+            }
                 .collectLatest { state ->
-                    updateFilterChips(state.tags, state.ids, state.tagModes, state.favoritesOnly)
-                    updateTagPanel(state.tags, state.ids)
+                    updateFilterChips(
+                        state.tags,
+                        state.ids,
+                        state.tagModes,
+                        state.favoritesOnly,
+                        state.recentOnly
+                    )
+                    updateTagPanel(state.panelTags, state.ids)
                 }
         }
     }
 
     /**
-     * 筛选条的内容：全部（清空筛选）、收藏、以及每一个正在生效的标签。
+     * 筛选条的内容：全部（清空筛选）、收藏、最近（用过的，v0.2.007）、以及每一个正在生效的标签。
      *
      * 已选标签写成「& 猫 ×」：前缀是它自己的合并方式（& 交 / | 并 / ! 非），点标签本身换下一种，
      * 点尾巴上的 × 把它从筛选里去掉（用户 m10282）。
@@ -1490,14 +1595,17 @@ class MainActivity : AppCompatActivity() {
         tags: List<TagEntity>,
         ids: Set<Long>,
         tagModes: Map<Long, TagMode>,
-        favoritesOnly: Boolean
+        favoritesOnly: Boolean,
+        recentOnly: Boolean
     ) {
         val selected = tags.filter { it.id in ids }
         val all = getString(R.string.filter_all)
         val favorites = getString(R.string.filter_favorites)
+        val recent = getString(R.string.filter_recent)
         val target = listOf<Triple<String, Long?, Int>>(
             Triple(all, null, 0),
-            Triple(favorites, null, 1)
+            Triple(favorites, null, 1),
+            Triple(recent, null, 3)
         ) + selected.map {
             Triple(selectedTagLabel(it.name, tagModes[it.id] ?: TagMode.ALL), it.id, 2)
         }
@@ -1517,8 +1625,14 @@ class MainActivity : AppCompatActivity() {
                         // 条件变了就回顶上：还停在旧结果的中段，看着像筛选没生效（用户 m10115）
                         jumpGridToTop()
                     }
+                    // 最近：跟收藏一样是叠加条件，不动标签
+                    kind == 3 -> createFilterChip(label) {
+                        viewModel.toggleRecentOnly()
+                        jumpGridToTop()
+                    }
                     else -> createFilterChip(label) {
                         viewModel.setFavoritesOnly(false)
+                        viewModel.setRecentOnly(false)
                         viewModel.clearTagFilter()
                         jumpGridToTop()
                     }
@@ -1529,10 +1643,12 @@ class MainActivity : AppCompatActivity() {
             chips.forEach { filterContainer.addView(it) }
         }
 
+        // 前三颗固定是「全部 / 收藏 / 最近」，再往后才是已选标签
         filterChips.forEachIndexed { index, chip ->
             chip.isChecked = when (index) {
-                0 -> !favoritesOnly && selected.isEmpty()
+                0 -> !favoritesOnly && !recentOnly && selected.isEmpty()
                 1 -> favoritesOnly
+                2 -> recentOnly
                 else -> true
             }
         }
@@ -1619,6 +1735,8 @@ class MainActivity : AppCompatActivity() {
      * （用户 m10282）。长按任意一颗标签可以重命名或删除它，标签的管理动作都挂在标签自己身上。
      */
     private fun updateTagPanel(tags: List<TagEntity>, ids: Set<Long>) {
+        // 传进来的是 tagPanelTags：图片、动图最前，其余按挂着的张数从多到少（用户 m11668 第 7 条）。
+        // key 看的是顺序本身，所以张数变了导致换位时这里会整块重建一遍
         val key = tags.joinToString(",") { it.name }
         if (key != tagPanelKey) {
             tagPanelKey = key
@@ -1647,13 +1765,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 面板顶上那一行：只有「新建标签 / 管理标签」（用户 m10194、m10201）。
+     * 面板顶上那一行：「重置 / 新建标签 / 管理标签」（用户 m10194、m10201；重置是 m11668 第 6 条）。
+     *
+     * 重置排在最前：选过的标签多了以后一颗颗点掉很烦，一次点击清干净。
+     * 它只清标签选择（交 / 并 / 非 一并归零），收藏 / 最近那两颗固定筛选不动 ——
+     * 那两颗不是「标签」，不在这件事里（用户 m11668 第 6 条的原话是「清空当前的 tag 选择情况」）。
      *
      * 交 / 并 / 非 三颗原本也在这里，v0.2.005 起挪到筛选条的标签本身上去了（用户 m10282）：
      * 合并方式是每个标签各自的事，挂在标签上既能一眼看见当前是什么运算，也少点几下。
      */
     private fun refreshTagActions() {
         tagActions.removeAllViews()
+        tagActions.addView(createPanelActionChip(getString(R.string.tag_action_reset)) {
+            viewModel.clearTagFilter()
+            jumpGridToTop()
+        })
         tagActions.addView(createPanelActionChip(getString(R.string.tag_action_new)) {
             showTagInputDialog { viewModel.addTag(it) }
         })
@@ -2271,6 +2397,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     )
                     if (report.failed > 0) append(getString(R.string.archive_export_done_missing, report.failed))
+                    if (report.ignored > 0) append(getString(R.string.archive_export_done_ignored, report.ignored))
                 }
             }
             MaterialAlertDialogBuilder(this@MainActivity)
@@ -2331,6 +2458,18 @@ class MainActivity : AppCompatActivity() {
                     append(getString(R.string.archive_import_done, report.emojis, report.tags))
                     if (report.skipped > 0) append(getString(R.string.archive_import_done_skipped, report.skipped))
                     if (report.failed > 0) append(getString(R.string.archive_import_done_failed, report.failed))
+                    // 忽略名单随包来回：说了恢复几条，也要说丢了几条，不然用户只会看到名单莫名少了
+                    if (report.ignoredDropped > 0) {
+                        append(
+                            getString(
+                                R.string.archive_import_done_ignored_dropped,
+                                report.ignored,
+                                report.ignoredDropped
+                            )
+                        )
+                    } else if (report.ignored > 0) {
+                        append(getString(R.string.archive_import_done_ignored, report.ignored))
+                    }
                 }
             }
             MaterialAlertDialogBuilder(this@MainActivity)
@@ -2364,16 +2503,28 @@ class MainActivity : AppCompatActivity() {
     /** 一张图的导入结果：拿到真名 / 没拿到（用导入时间兜底）/ 失败。 */
     private enum class ImportOutcome { OK, NAME_FALLBACK, FAILED }
 
+    /**
+     * 相册 / 文件多选导入（用户 m11668 第 4 条起：从时间靠前的开始导）。
+     *
+     * 落库时 createTime 记的是「导入那一刻」，网格按它倒序 —— 于是从早到晚导入，
+     * 源文件时间最新的那批最后进来、排在网格最前面，正在用的那些不用在几千张里翻。
+     * 问时间戳要一张张查，所以放在 IO 线程上（单列查询，很轻）。
+     */
     private fun importImages(uris: List<android.net.Uri>) {
         if (uris.isEmpty()) return
         lifecycleScope.launch {
+            val ordered = if (uris.size > 1) {
+                withContext(Dispatchers.IO) { ImportOrder.sortedByTime(this@MainActivity, uris) }
+            } else {
+                uris
+            }
             // 单张不弹进度框：一闪而过反而像卡了。
             var progress: BusyDialog.Progress? = null
-            if (uris.size > 1) {
+            if (ordered.size > 1) {
                 progress = BusyDialog.showProgress(
                     this@MainActivity,
                     R.string.import_progress_title,
-                    getString(R.string.import_progress_format, 1, uris.size)
+                    getString(R.string.import_progress_format, 1, ordered.size)
                 )
             }
 
@@ -2381,14 +2532,14 @@ class MainActivity : AppCompatActivity() {
             var failed = 0
             var noName = 0
             try {
-                uris.forEachIndexed { index, uri ->
+                ordered.forEachIndexed { index, uri ->
                     progress?.let { bar ->
                         BusyDialog.update(
                             this@MainActivity,
                             bar,
                             index + 1,
-                            uris.size,
-                            getString(R.string.import_progress_format, index + 1, uris.size)
+                            ordered.size,
+                            getString(R.string.import_progress_format, index + 1, ordered.size)
                         )
                     }
                     // 落库要整份拷贝文件、还要解码图片读宽高，全是阻塞 IO：
@@ -2408,7 +2559,7 @@ class MainActivity : AppCompatActivity() {
             }
             showImportResult(ok, failed, noName)
             // 一张都没进来就别动用户的原文件（见「导入后的原文件怎么办」这条策略）。
-            if (ok > 0) handleSourceFiles(uris)
+            if (ok > 0) handleSourceFiles(ordered)
         }
     }
 
@@ -2638,9 +2789,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openEmojiDetail(emoji: EmojiEntity) {
-        // 只传 id，详情页按 id 订阅数据库真值，避免搬运残缺实体导致字段被覆盖
+        // 只传 id，详情页按 id 订阅数据库真值，避免搬运残缺实体导致字段被覆盖。
+        // v0.2.013（用户 m11668 第 1 条）：顺带把格子上现在这一屏的顺序带过去，
+        // 详情页据此左右划换图、并在顶上显示 (第几个 / 共几个) —— 范围就是 tag 筛选之后的结果。
+        val siblings = adapter.currentList.map { it.id }.toLongArray()
         val intent = Intent(this, EmojiDetailActivity::class.java).apply {
             putExtra(EmojiDetailActivity.EXTRA_EMOJI_ID, emoji.id)
+            putExtra(EmojiDetailActivity.EXTRA_SIBLINGS, siblings)
         }
         startActivity(intent)
     }
@@ -2653,6 +2808,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 「在最近任务里隐藏」只对当前这个 task 实例有效（划掉重开就回到默认），
+        // 所以每次回前台都按设置重新套一遍（用户 m11668 第 3 条）。
+        RecentsHider.apply(this)
         if (viewModel.isSelectionMode.value) {
             viewModel.toggleSelectionMode()
         }

@@ -15,6 +15,7 @@
         app:elevation="0dp"
         app:navigationIcon="@drawable/ic_back"
         app:navigationIconTint="@color/text_primary"
+        app:subtitleTextColor="@color/text_secondary"
         app:title="@string/detail_title"
         app:titleTextColor="@color/text_primary" />
 

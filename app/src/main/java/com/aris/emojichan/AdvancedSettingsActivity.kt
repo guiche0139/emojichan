@@ -15,11 +15,13 @@ import com.aris.emojichan.sender.SendLogActivity
 import com.aris.emojichan.storage.EmojiCompressor
 import com.aris.emojichan.storage.SimilarFinder
 import com.aris.emojichan.sender.SenderPrefs
+import com.aris.emojichan.util.RecentsHider
 import com.aris.emojichan.util.SourceFiles
 import com.aris.emojichan.viewmodel.EmojiViewModel
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,6 +60,11 @@ class AdvancedSettingsActivity : AppCompatActivity() {
     private lateinit var searchLineHint: TextView
     private var syncingSearchLineToggle = false
 
+    // ---- 在最近任务里隐藏（v0.2.013，用户 m11668 第 3 条） ----
+    private lateinit var hideRecentsSwitch: MaterialSwitch
+    private lateinit var hideRecentsHint: TextView
+    private var syncingHideRecents = false
+
     // ---- 表情原文件 ----
     private lateinit var sourceRadio: RadioGroup
     private lateinit var sourceHint: TextView
@@ -85,6 +92,7 @@ class AdvancedSettingsActivity : AppCompatActivity() {
         setupCompress()
         setupSearch()
         setupRoute()
+        setupRecents()
     }
 
     override fun onResume() {
@@ -92,6 +100,7 @@ class AdvancedSettingsActivity : AppCompatActivity() {
         refreshSource()
         refreshCompress()
         refreshSearch()
+        refreshHideRecents()
     }
 
     // ---------------- 表情原文件 ----------------
@@ -300,6 +309,41 @@ class AdvancedSettingsActivity : AppCompatActivity() {
         SimilarFinder.STRICT -> R.string.settings_search_hint_4
         SimilarFinder.LOOSE -> R.string.settings_search_hint_12
         else -> R.string.settings_search_hint_8
+    }
+
+    // ---------------- 在最近任务里隐藏（用户 m11668 第 3 条） ----------------
+
+    private fun setupRecents() {
+        hideRecentsSwitch = findViewById(R.id.hideRecentsSwitch)
+        hideRecentsHint = findViewById(R.id.hideRecentsHint)
+        hideRecentsSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!syncingHideRecents) applyHideRecents(checked)
+        }
+        refreshHideRecents()
+    }
+
+    private fun refreshHideRecents() {
+        val hide = UiPrefs.hideFromRecents(this)
+        syncingHideRecents = true
+        hideRecentsSwitch.isChecked = hide
+        syncingHideRecents = false
+        hideRecentsHint.setText(
+            if (hide) R.string.settings_hide_recents_hint_on
+            else R.string.settings_hide_recents_hint_off
+        )
+    }
+
+    private fun applyHideRecents(hide: Boolean) {
+        UiPrefs.setHideFromRecents(this, hide)
+        // 光写偏好不管用：标志得当场套在当前 task 上，否则这一趟从最近任务里还是划得掉
+        RecentsHider.apply(this)
+        refreshHideRecents()
+        Toast.makeText(
+            this,
+            if (hide) R.string.settings_hide_recents_on_toast
+            else R.string.settings_hide_recents_off_toast,
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     // ---------------- 表情发送方式（原样搬自主设置页） ----------------

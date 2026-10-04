@@ -120,6 +120,15 @@ interface EmojiDao {
     @Query("SELECT * FROM tags ORDER BY name")
     fun observeTags(): Flow<List<TagEntity>>
 
+    /**
+     * 每个标签挂着多少张表情（标签下拉排序用，用户 m11668 第 7 条）。
+     *
+     * 走 emoji_tags 表：挂载行一变 Room 就重发一次，所以贴过 / 摘过标签之后
+     * 面板的顺序会跟着变。没挂过任何东西的标签在这里查不到，调用方按 0 张处理。
+     */
+    @Query("SELECT tagId, COUNT(*) AS count FROM emoji_tags GROUP BY tagId")
+    fun observeTagCounts(): Flow<List<TagCount>>
+
     @Query("SELECT * FROM tags ORDER BY name")
     suspend fun getTags(): List<TagEntity>
 

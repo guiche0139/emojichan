@@ -83,6 +83,9 @@ class EmojiRepository(context: Context) {
 
     fun observeTags(): Flow<List<TagEntity>> = emojiDao.observeTags()
 
+    /** 每个标签挂着多少张表情（只给标签下拉排序用）。 */
+    fun observeTagCounts(): Flow<List<TagCount>> = emojiDao.observeTagCounts()
+
     suspend fun getTags(): List<TagEntity> = emojiDao.getTags()
 
     /** @return false 表示同名标签已存在。 */

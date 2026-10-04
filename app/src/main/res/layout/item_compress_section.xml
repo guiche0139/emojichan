@@ -1,12 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 压缩页里的分段标题：一段（10 MB 以上 / 1–10 MB / 1 MB 以下）一行。 -->
+<!--
+  压缩页里的分段标题（v0.2.013，用户 m11668 第 2 条）：一段（10 MB 以上 / 1–10 MB / 1 MB 以下）一行。
+  整行点一下折叠 / 展开这一段；右边那两颗只作用在这一段上（全选本档 / 取消本档）。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
     android:gravity="center_vertical"
+    android:minHeight="44dp"
     android:orientation="horizontal"
     android:paddingTop="18dp"
     android:paddingBottom="6dp">
+
+    <TextView
+        android:id="@+id/compressSectionFold"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="6dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp" />
 
     <TextView
         android:id="@+id/compressSectionTitle"
@@ -22,4 +37,19 @@
         android:layout_height="wrap_content"
         android:textColor="@color/text_secondary"
         android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/compressSectionSelectAll"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:paddingStart="10dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="6dp"
+        android:textColor="?attr/colorAccentStroke"
+        android:textSize="13sp" />
 </LinearLayout>

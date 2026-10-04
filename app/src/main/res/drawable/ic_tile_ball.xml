@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  状态栏磁贴图标（用户 m12747；嘴按 m12808 补上）。
+
+  为什么要有这么一个文件：磁贴图标是按**不透明度**画的，而 app 的启动图标是自适应图标 ——
+  底层白底铺满整格、前景白猫脸又几乎盖满，整块 alpha 全是 1 ⇒ 状态栏里只看得见一个白方块。
+  这里照用户说的做：把设计稿 icon.png 里**粉色、蓝色和嘴**的像素块留成 1，其余（白脸、灰投影）全透明。
+
+  坐标与色值和 drawable/ic_cat_face.xml 里的同几块逐字一致（32×32 设计稿坐标系，每格 1 单位）。
+  颜色不统一涂白的理由：磁贴图标万一不被系统染色，白图标在浅色面板上会看不见，粉色 / 蓝色两边都看得见。
+  嘴也不照抄设计稿的 #444444：那个色在深色面板（#2E2E2E 上下）几乎看不见，加了等于没加；
+  取设计稿里本来就有的中灰 #888888，深色面板上清楚、浅色面板上也还看得见。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+
+    <!-- 粉色：左轮廓、右耳内边、右眼 -->
+    <path
+        android:fillColor="#FFFF99DF"
+        android:pathData="M3,3h1v26h-1zM23,3h1v6h-1zM21,13h3v1h-3zM21,14h2v1h-2zM21,15h3v3h-3z" />
+    <!-- 蓝色：右轮廓、左耳内边、左眼 -->
+    <path
+        android:fillColor="#FF99DFFF"
+        android:pathData="M28,3h1v26h-1zM8,3h1v6h-1zM8,13h3v1h-3zM8,14h2v1h-2zM8,15h3v3h-3z" />
+    <!-- 嘴：ω 形（13 个 1×1 方块，坐标照抄 ic_cat_face.xml，只换了颜色） -->
+    <path
+        android:fillColor="#FF888888"
+        android:pathData="M12,20h1v1h-1zM15,20h1v1h-1zM18,20h1v1h-1zM12,21h1v1h-1zM14,21h1v1h-1zM16,21h1v1h-1zM18,21h1v1h-1zM12,22h1v1h-1zM14,22h1v1h-1zM16,22h1v1h-1zM18,22h1v1h-1zM13,23h1v1h-1zM17,23h1v1h-1z" />
+</vector>

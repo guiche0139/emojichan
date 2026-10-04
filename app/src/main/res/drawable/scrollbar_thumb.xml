@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  列表滑动条的把手（用户 m11352）：一条半透明的圆角细条子，颜色深浅色各一份
+  （values/ 与 values-night/ 里的 scrollbar_thumb）。宽度由用它的视图
+  android:scrollbarSize 定，这里只管形状。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/scrollbar_thumb" />
+    <corners android:radius="2dp" />
+</shape>

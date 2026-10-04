@@ -76,3 +76,8 @@ app/release/
 .codex/
 .cursor/
 *.log
+
+# 本机分析工作目录（含个人聊天截图的派生物与预览图，绝不入库）
+.meme-snap/
+.gifscan/
+.tmp_zip_entries.json

@@ -223,6 +223,17 @@
                         <include
                             android:id="@+id/rowSearch"
                             layout="@layout/item_storage_menu_row" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginStart="16dp"
+                            android:background="@color/divider" />
+
+                        <!-- 长时间不使用的表情（v0.2.013，用户 m11668 第 5 条） -->
+                        <include
+                            android:id="@+id/rowStale"
+                            layout="@layout/item_storage_menu_row" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
             </LinearLayout>

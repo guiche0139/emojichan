@@ -89,15 +89,15 @@ object SimilarFinder {
      * @param hashOf 算一张图的感知哈希；返回 null 表示算不出来（文件没了、不是图片），这一张跳过。
      *   取消要照原样抛出去 —— 用户点了「停止」不能还闷头把剩下的算完。
      * @param onProgress 每处理一张报一次（已处理, 总数）
-     * @param ignored 用户标过「这两张不像同一个表情」的判定（v0.2.006，见 [SimilarIgnore]）。
-     *   返回 true 的两张永远不会落进同一组。
+     * @param banned 每张图的「禁忌名单」：名单里的那些不能跟它进同一组（v0.2.006 起的忽略名单，
+     *   见 [SimilarIgnore]。v0.2.007 起由「两张比不比」的回调换成了查表，理由见 [group]）。
      */
     suspend fun find(
         items: List<DuplicateFinder.Item>,
         threshold: Int,
         hashOf: suspend (DuplicateFinder.Item) -> Long?,
         onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> },
-        ignored: (Long, Long) -> Boolean = { _, _ -> false }
+        banned: (Long) -> Set<Long> = { emptySet() }
     ): List<Group> {
         val todo = items.filter { it.present }.sortedBy { it.createTime }
         val hashes = HashMap<Long, Long>()
@@ -113,7 +113,7 @@ object SimilarFinder {
             if (hash != null) hashes[item.id] = hash
         }
         onProgress(todo.size, todo.size)
-        return group(todo, hashes, threshold, ignored)
+        return group(todo, hashes, threshold, banned)
     }
 
     /**
@@ -122,15 +122,19 @@ object SimilarFinder {
      * 按导入时间依次入组，每张跟「底线内最近的组代表」走；都不够近就自己当新组的代表。
      * 结果按差距由近到远排（[SIMILARITY_ORDER]）。
      *
-     * @param ignored 用户标过「这两张不像同一个表情」的判定（v0.2.006，见 [SimilarIgnore]）：
-     *   跟候选组里任何一张被忽略过就不进这一组。不能只比代表 —— A 与 C 被忽略、B 先进了这组
-     *   （B 跟谁都没被忽略），C 会顺着代表 B 混进来，用户看到的还是原来那一组。
+     * 入组之前先过一遍用户的忽略名单：跟候选组里任何一张被忽略过就不进这一组。不能只比代表 ——
+     * A 与 C 被忽略、B 先进了这组（B 跟谁都没被忽略），C 会顺着代表 B 混进来，看到的还是原来那一组。
+     *
+     * @param banned 每张图的「禁忌名单」（v0.2.007，用户 m10764）。以前这个位置收的是「这两张像不像」
+     *   的回调，每比一次都要现拼一个「小id:大id」的键、再查一次字符串集合：4000 张、每组几十个成员
+     *   时是几百万次拼串，落在主线程上就是用户 m10698 报的那种卡顿。换成查表之后，最常见的情况
+     *   ——这张图没有任何禁忌——是一次空判断，连整组的成员扫描都跳过。
      */
     fun group(
         items: List<DuplicateFinder.Item>,
         hashes: Map<Long, Long>,
         threshold: Int,
-        ignored: (Long, Long) -> Boolean = { _, _ -> false }
+        banned: (Long) -> Set<Long> = { emptySet() }
     ): List<Group> {
         val ordered = items.filter { it.present }.sortedBy { it.createTime }
         val groups = mutableListOf<MutableList<DuplicateFinder.Item>>()
@@ -139,10 +143,12 @@ object SimilarFinder {
 
         ordered.forEach { item ->
             val hash = hashes[item.id] ?: return@forEach
+            // 这张图的禁忌名单只查一次；是空的时候下面那圈逐个成员的比对整个跳过（绝大多数图都是空的）
+            val forbidden = banned(item.id)
             var best = -1
             var bestDistance = Int.MAX_VALUE
             for (index in groups.indices) {
-                if (groups[index].any { ignored(item.id, it.id) }) continue
+                if (forbidden.isNotEmpty() && groups[index].any { it.id in forbidden }) continue
                 val distance = PerceptualHash.distance(hash, representatives[index])
                 if (distance <= threshold && distance < bestDistance) {
                     best = index

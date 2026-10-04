@@ -5,16 +5,20 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aris.emojichan.R
+import com.aris.emojichan.SimilarPrefs
 import com.aris.emojichan.UiPrefs
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiFilter
+import com.aris.emojichan.data.EmojiOrder
 import com.aris.emojichan.data.EmojiRepository
 import com.aris.emojichan.data.ImageFeatureEntity
 import com.aris.emojichan.data.TagEntity
 import com.aris.emojichan.data.TagMode
+import com.aris.emojichan.data.TagOrder
 import com.aris.emojichan.util.EmojiArchive
 import com.aris.emojichan.util.FolderImporter
 import com.aris.emojichan.util.ImageUtil
+import com.aris.emojichan.storage.SimilarIgnore
 import java.io.InputStream
 import java.io.OutputStream
 import java.text.Collator
@@ -51,6 +55,16 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val _favoritesOnly = MutableStateFlow(false)
     val favoritesOnly: StateFlow<Boolean> = _favoritesOnly.asStateFlow()
+
+    /**
+     * 只看用过的（v0.2.007，用户 m10764）。
+     *
+     * 跟「收藏」一样是筛选条上的一档，不是另一套列表：它和标签、搜索条件照常叠加，决定哪些图
+     * 留下来的是 [EmojiQuery]。区别在顺序 —— 这一档按最近使用时间倒序排（见 [sorted]），
+     * 「最近」的意义就是顺序（跟悬浮球面板里那颗「最近」是同一个读法）。
+     */
+    private val _recentOnly = MutableStateFlow(false)
+    val recentOnly: StateFlow<Boolean> = _recentOnly.asStateFlow()
 
     /** 过滤区里勾中的标签。 */
     private val _selectedTagIds = MutableStateFlow<Set<Long>>(emptySet())
@@ -94,9 +108,13 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 真正排一遍。主字段比完拿 id 兜底：同一批导入的表情 createTime 常常一模一样，
      * 不兜底的话两次排出来的先后可能不同，看着像列表在乱跳。
+     *
+     * [recent] 为真（筛选条上的「最近」）时改成按最近使用时间倒序：那一档要看的就是顺序本身，
+     * 排序设置在那儿让位 —— 否则「最近」看上去跟别的分类没区别。
      */
-    private fun sorted(list: List<EmojiEntity>, spec: SortSpec): List<EmojiEntity> {
+    private fun sorted(list: List<EmojiEntity>, spec: SortSpec, recent: Boolean): List<EmojiEntity> {
         if (list.size < 2) return list
+        if (recent) return EmojiOrder.recentFirst(list)
         val collator = Collator.getInstance(Locale.getDefault())
         val primary = when (spec.field) {
             UiPrefs.SORT_NAME -> Comparator<EmojiEntity> { a, b -> collator.compare(a.name, b.name) }
@@ -108,7 +126,7 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 列表数据：收藏 / 搜索条件 / 标签 的组合过滤。
+     * 列表数据：收藏 / 最近 / 搜索条件 / 标签 的组合过滤。
      *
      * 搜索框那句话由 [EmojiFilter.parse] 解析成条件表达式（`&` 同时满足、`/` 任一满足），
      * 这里只管攒条件，翻译成 SQL 是 [EmojiQuery] 的事 —— 只有一条查询路径
@@ -118,23 +136,44 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         _searchQuery,
         _selectedTagIds,
         _tagModes,
-        _favoritesOnly
-    ) { query, tagIds, tagModes, favoritesOnly ->
+        _favoritesOnly,
+        _recentOnly
+    ) { query, tagIds, tagModes, favoritesOnly, recentOnly ->
         EmojiFilter(
             favoritesOnly = favoritesOnly,
             expr = EmojiFilter.parse(query),
             tagIds = tagIds.toList(),
-            tagModes = tagModes
+            tagModes = tagModes,
+            recentOnly = recentOnly
         )
     }.flatMapLatest { filter -> repository.observeFiltered(filter) }
         .combine(_sort) { list, spec -> list to spec }
+        .combine(_recentOnly) { (list, spec), recent -> Triple(list, spec, recent) }
         // 排序交给后台线程：几千张时按名称排要跑一遍 Collator，不能卡在换顺序那一帧
-        .map { (list, spec) -> withContext(Dispatchers.Default) { sorted(list, spec) } }
+        .map { (list, spec, recent) ->
+            withContext(Dispatchers.Default) { sorted(list, spec, recent) }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /** 全部标签，过滤区与标签管理都用它。 */
+    /** 全部标签，过滤区与标签管理都用它（按名字序，与数据库里一致）。 */
     val tags: StateFlow<List<TagEntity>> = repository.observeTags()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** 每个标签挂着多少张表情：只服务于标签下拉的排序（用户 m11668 第 7 条）。 */
+    private val tagCounts: StateFlow<Map<Long, Int>> = repository.observeTagCounts()
+        .map { rows -> rows.associate { it.tagId to it.count } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /**
+     * 标签下拉里的显示顺序（用户 m11668 第 7 条）：「图片」「动图」固定最前，
+     * 其余按挂着的张数从多到少，规则本体在 `TagOrder.forPanel` 里。
+     *
+     * 另开一条流、而不是直接给 [tags] 重排：标签管理弹窗与搜索补全都按名字序读 [tags]，
+     * 想按用量排的只有下拉这一处。
+     */
+    val tagPanelTags: StateFlow<List<TagEntity>> = combine(tags, tagCounts) { list, counts ->
+        TagOrder.forPanel(list, counts)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val emojiCount: StateFlow<Int> = repository.getCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -199,6 +238,14 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleFavoritesOnly() {
         _favoritesOnly.value = !_favoritesOnly.value
+    }
+
+    fun setRecentOnly(only: Boolean) {
+        _recentOnly.value = only
+    }
+
+    fun toggleRecentOnly() {
+        _recentOnly.value = !_recentOnly.value
     }
 
     fun toggleTagFilter(tagId: Long) {
@@ -385,8 +432,7 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
             if (failed > 0) {
                 _message.value = str(R.string.msg_delete_partial_failed, failed)
             }
-            _selectedIds.value = emptySet()
-            _isSelectionMode.value = false
+            exitSelection()
             failed
         } catch (e: Exception) {
             e.printStackTrace()
@@ -467,12 +513,24 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- 批量整理（选择模式） ----------
 
+    /**
+     * 批量整理成功后的收尾：清空勾选 + 退出选择模式。
+     *
+     * 用户 m11465：整理（加/摘标签）做完后勾选还留在网格上，看着像没生效。
+     * 收尾与删除用同一套，保证「一次批量操作 = 一次选择结束」。
+     */
+    private fun exitSelection() {
+        _selectedIds.value = emptySet()
+        _isSelectionMode.value = false
+    }
+
     /** 给选中的表情批量打上已有标签。 */
     fun addTagsToSelected(tagIds: List<Long>) = launchAction {
         val ids = _selectedIds.value.toList()
         if (ids.isEmpty()) return@launchAction str(R.string.msg_nothing_selected)
         if (tagIds.isEmpty()) return@launchAction str(R.string.msg_tag_none_selected)
         repository.addTags(ids, tagIds)
+        exitSelection()
         str(R.string.msg_tags_added, ids.size)
     }
 
@@ -485,6 +543,7 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         val tagId = repository.ensureTag(trimmed)
             ?: return@launchAction str(R.string.msg_tag_create_failed, trimmed)
         repository.addTags(ids, listOf(tagId))
+        exitSelection()
         str(R.string.msg_tags_added, ids.size)
     }
 
@@ -494,6 +553,7 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         if (ids.isEmpty()) return@launchAction str(R.string.msg_nothing_selected)
         if (tagIds.isEmpty()) return@launchAction str(R.string.msg_tag_none_selected)
         repository.removeTags(ids, tagIds)
+        exitSelection()
         str(R.string.msg_tags_removed, ids.size)
     }
 
@@ -589,6 +649,36 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
                 repository.getAllOnce(),
                 repository.getTags(),
                 repository.getAllTagLinksOnce(),
+                SimilarPrefs.ignoredRecords(getApplication()),
+                appVersion(),
+                onProgress
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+            EmojiArchive.Report(error = EmojiArchive.Error.IO)
+        }
+    }
+
+    /**
+     * 只导出一部分表情（存储页的「长时间不使用的表情」用，v0.2.013 / 用户 m11668 第 5 条）。
+     *
+     * 跟 [exportLibrary] 是同一条路，只有表情清单换成点中的那些：标签、标签关联、忽略名单
+     * 照旧整份带上 —— 包本身仍是一个普通备份包，导入端不用为它写任何分支（清单里多出来的
+     * id 只有打包时写、导入时按「名字 + 体积」重新映射，见 [EmojiArchive]）。
+     */
+    suspend fun exportEmojis(
+        ids: List<Long>,
+        output: OutputStream,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): EmojiArchive.Report = withContext(Dispatchers.IO) {
+        try {
+            EmojiArchive.export(
+                getApplication<Application>(),
+                output,
+                repository.getByIds(ids),
+                repository.getTags(),
+                repository.getAllTagLinksOnce(),
+                SimilarPrefs.ignoredRecords(getApplication()),
                 appVersion(),
                 onProgress
             )
@@ -631,11 +721,13 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         openInput: () -> InputStream?,
         onProgress: (Int, Int) -> Unit
     ): EmojiArchive.Report {
+        // 导入前的库快照有两处要用：MERGE 的去重键，和「旧忽略名单该按哪些 id 剪」。
+        val existing = repository.getAllOnce()
         val imported = EmojiArchive.import(
             context = getApplication<Application>(),
             openInput = openInput,
             mode = EmojiArchive.Mode.MERGE,
-            existing = repository.getAllOnce(),
+            existing = existing,
             onProgress = onProgress
         )
         val report = imported.report
@@ -643,8 +735,15 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
         if (report.error != null) return report
 
         val tagIds = LinkedHashSet<Long>()
-        val (stored, failed) = storeAll(imported, tagIds)
-        return report.copy(emojis = stored, failed = report.failed + failed, tags = tagIds.size)
+        val newIds = storeAll(imported, tagIds)
+        val restored = restoreIgnored(imported, newIds, existing, keepOld = true)
+        return report.copy(
+            emojis = newIds.count { it != null },
+            failed = report.failed + newIds.count { it == null },
+            tags = tagIds.size,
+            ignored = restored.records.size,
+            ignoredDropped = restored.dropped
+        )
     }
 
     /**
@@ -681,16 +780,20 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
 
         val tagIds = LinkedHashSet<Long>()
         repository.clearLibrary()
-        val (stored, failed) = storeAll(imported, tagIds)
+        val newIds = storeAll(imported, tagIds)
+        // REPLACE：库是全新的，旧忽略名单必然指向别的图 —— 整份换成包里带来的（keepOld = false）
+        val restored = restoreIgnored(imported, newIds, emptyList(), keepOld = false)
         // 新库已经落定，这会儿才可以动旧文件；快照里的新文件被 newPaths 挡着，绝不会误删
         for (path in oldPaths) {
             if (path !in newPaths) ImageUtil.deleteFile(path)
         }
         return EmojiArchive.Report(
-            emojis = stored,
-            failed = report.failed + failed,
+            emojis = newIds.count { it != null },
+            failed = report.failed + newIds.count { it == null },
             tags = tagIds.size,
-            bytes = report.bytes
+            bytes = report.bytes,
+            ignored = restored.records.size,
+            ignoredDropped = restored.dropped
         )
     }
 
@@ -701,25 +804,60 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
      * 都会让列表里多出一张打不开的空图。
      *
      * @param tagIds 收集这次导入真正用到过的标签 id（跨所有表情去重，用来填 Report.tags）。
-     * @return first = 成功入库的张数，second = 入库失败的张数。
+     * @return 与 [EmojiArchive.Imported.emojis] 同序同长：入库成功的那个新 id，失败的位置是 null
+     *   （调用方靠下标关系拼「包里的 id → 本机的 id」这张表，忽略名单要照着它搬家）。
      */
     private suspend fun storeAll(
         imported: EmojiArchive.Imported,
         tagIds: MutableSet<Long>
-    ): Pair<Int, Int> {
-        var stored = 0
-        var failed = 0
+    ): List<Long?> {
+        val newIds = ArrayList<Long?>(imported.emojis.size)
         imported.emojis.forEachIndexed { index, emoji ->
             val id = runCatching { repository.insert(emoji) }.getOrNull()
             if (id == null || id <= 0L) {
                 ImageUtil.deleteFile(emoji.filePath)
-                failed++
+                newIds.add(null)
                 return@forEachIndexed
             }
-            stored++
+            newIds.add(id)
             attachTags(id, imported.tagsOf.getOrElse(index) { emptyList() }, tagIds)
         }
-        return stored to failed
+        return newIds
+    }
+
+    /**
+     * 把包里带来的忽略名单写回偏好（v0.2.012，用户 m11327 的第 3 条）。
+     *
+     * old → new 的映射有两个来源：这次真入库的那些（[EmojiArchive.Imported.oldIds] 与
+     * [EmojiArchive.Imported.emojis] 同序，失败的位置是 null）和 MERGE 里被「库里已经有
+     * 一模一样的」顶掉的那些（[EmojiArchive.Imported.takenOldIds] 直接给了库里那张的 id）。
+     *
+     * @param aliveBefore 导入前库里那批记录：追加模式下先按它把**旧**名单剪一遍。删掉表情腾出来的
+     *   旧 id 可能正好被这次新导入的图占用，不剪的话旧记录就会误伤刚进来的新图。
+     * @param keepOld true = 在原有名单上追加（MERGE）；false = 整份换掉（REPLACE：清库后 id 全部
+     *   重新分配，旧记录必然指向别的图，留着就是错的）。
+     */
+    private fun restoreIgnored(
+        imported: EmojiArchive.Imported,
+        newIds: List<Long?>,
+        aliveBefore: List<EmojiEntity>,
+        keepOld: Boolean
+    ): SimilarIgnore.Restored {
+        val context = getApplication<Application>()
+        val mapping = HashMap<Long, Long>(imported.takenOldIds)
+        imported.oldIds.forEachIndexed { index, oldId ->
+            val fresh = newIds.getOrNull(index)
+            if (oldId > 0L && fresh != null && fresh > 0L) mapping[oldId] = fresh
+        }
+        val restored = SimilarIgnore.restore(imported.ignored, mapping)
+        val merged = if (keepOld) {
+            val alive = aliveBefore.mapTo(HashSet(aliveBefore.size)) { it.id }
+            SimilarIgnore.keepAlive(SimilarPrefs.ignoredRecords(context), alive) + restored.records
+        } else {
+            restored.records
+        }
+        SimilarPrefs.setIgnoredRecords(context, merged)
+        return restored
     }
 
     /**

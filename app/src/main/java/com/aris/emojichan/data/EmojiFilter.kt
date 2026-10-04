@@ -65,7 +65,15 @@ data class EmojiFilter(
      * 没写进这张表的标签按 [TagMode.ALL] 算 —— 新选中的标签默认是「交」。读法与搜索框那套
      * 语法同一套优先级（& 比 | 紧）：「& 猫 & 可爱 | 生气」= 有猫且有可爱、或者有生气。
      */
-    val tagModes: Map<Long, TagMode> = emptyMap()
+    val tagModes: Map<Long, TagMode> = emptyMap(),
+
+    /**
+     * 只看用过的（v0.2.007，用户 m10764）：发送过的表情 lastUsedTime > 0，从没发过的还是 0。
+     *
+     * 主界面筛选条上那颗「最近」就是它。它只管「哪些图留下来」，顺序在 ViewModel 那边定成
+     * 「最近用过的排在前面」——这一档的意义就是顺序。
+     */
+    val recentOnly: Boolean = false
 ) {
     /** 某个标签用哪种合并方式；没单独设过就是「交」。 */
     fun modeOf(tagId: Long): TagMode = tagModes[tagId] ?: TagMode.ALL

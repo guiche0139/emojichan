@@ -62,11 +62,13 @@ class BallTileService : TileService() {
 
     private fun openApp(startBall: Boolean) {
         val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra(EXTRA_FROM_TILE, true)
             putExtra(EXTRA_START_BALL, startBall)
         }
-        runCatching { startActivityAndCollapse(intent) }
+        // 以前这里是裸的 startActivityAndCollapse(intent)：Android 14 上直接抛异常被吞掉，
+        // 于是「没权限 → 开界面去授权」这条路根本走不通（emc-2-029）。
+        val ok = TileLaunch.startActivityAndCollapse(this, intent, "磁贴")
+        SendLog.d("磁贴", if (ok) "已请求拉起主界面" else "没能拉起主界面")
     }
 
     private fun updateTile() {

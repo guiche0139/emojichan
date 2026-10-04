@@ -28,8 +28,17 @@ object FolderImporter {
      */
     data class Batch(val tagNames: List<String>, val emojis: List<EmojiEntity>)
 
-    /** 扫描阶段的产物：待解码的一张图，以及它该挂的标签链。 */
-    data class Entry(val tagNames: List<String>, val documentUri: Uri)
+    /**
+     * 扫描阶段的产物：待解码的一张图，它该挂的标签链，以及源文件的最后修改时间。
+     *
+     * [lastModified] 只用来排序（用户 m11668 第 4 条：从时间靠前的开始导入）；
+     * 读不到就是 0，排在最前。
+     */
+    data class Entry(
+        val tagNames: List<String>,
+        val documentUri: Uri,
+        val lastModified: Long = 0L
+)
 
     /**
      * 一份清单：要解码的图，以及有没有撞上 [MAX_FILES] 这道闸。
@@ -48,9 +57,13 @@ object FolderImporter {
     const val MAX_FILES = 20000
 
     /**
-     * 第一步：只列清单，不解码。按「先本层、后子层」排好。
+     * 第一步：只列清单，不解码。扫的时候按「先本层、后子层」，交回去之前再按源文件时间从早到晚排一遍。
      *
      * [onScanned] 每认出一张图报一次累计张数 —— 这时总数还没数出来，进度条只能转圈。
+     *
+     * 排序是全局的（用户 m11668 第 4 条）：同一个文件夹被时间打散成几段之后，
+     * [decode] 会按「标签链相同的连续段」多分几个批次 —— 批次只影响挂标签的写法，
+     * 每张图带的标签链仍是它自己那一条，不会挂错。
      *
      * @return 连根文件夹都打不开时返回 null。
      */
@@ -77,7 +90,8 @@ object FolderImporter {
                     arrayOf(
                         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                        DocumentsContract.Document.COLUMN_MIME_TYPE
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED
                     ),
                     null, null, null
                 )?.use { cursor ->
@@ -85,12 +99,17 @@ object FolderImporter {
                         val childId = cursor.getString(0) ?: continue
                         val name = cursor.getString(1).orEmpty()
                         val mime = cursor.getString(2).orEmpty()
+                        val modified = if (cursor.isNull(3)) 0L else cursor.getLong(3)
                         if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                             dirs.add(childId to (names + name))
                         } else if (mime.startsWith("image/")) {
                             remaining--
                             entries.add(
-                                Entry(names, DocumentsContract.buildDocumentUriUsingTree(treeUri, childId))
+                                Entry(
+                                    names,
+                                    DocumentsContract.buildDocumentUriUsingTree(treeUri, childId),
+                                    modified
+                                )
                             )
                             onScanned(entries.size)
                         }
@@ -99,7 +118,9 @@ object FolderImporter {
             }
             queue.addAll(dirs)
         }
-        return Plan(entries, truncated = remaining == 0)
+        // 从早到晚交出去：导入时 createTime 记的是当下，网格按它倒序，
+        // 于是源文件时间最新的那批最后入库、排在最前（用户 m11668 第 4 条）。sortedBy 是稳定排序。
+        return Plan(entries.sortedBy { it.lastModified }, truncated = remaining == 0)
     }
 
     /**

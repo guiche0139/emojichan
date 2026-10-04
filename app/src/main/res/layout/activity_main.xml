@@ -241,14 +241,21 @@
                 android:layout_height="0dp"
                 android:layout_weight="1">
 
+                <!-- 网格右侧的滑动条（用户 m11352）：常显不淡出，4dp 宽半透明，画在右边那 12dp
+                     留白里压不到表情；只是位置指示（Android 的滚动条手指拖不动，能拖的是
+                     FastScroller 那一套），几千张时一眼看出自己在哪一段 -->
                 <androidx.recyclerview.widget.RecyclerView
                     android:id="@+id/emojiGrid"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:clipToPadding="false"
+                    android:fadeScrollbars="false"
                     android:paddingHorizontal="12dp"
                     android:paddingTop="8dp"
-                    android:paddingBottom="4dp" />
+                    android:paddingBottom="4dp"
+                    android:scrollbarSize="4dp"
+                    android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
+                    android:scrollbars="vertical" />
 
                 <TextView
                     android:id="@+id/emptyView"
@@ -739,6 +746,7 @@
                                 android:textColor="@color/text_secondary"
                                 android:textSize="12sp" />
                         </LinearLayout>
+
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 

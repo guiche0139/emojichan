@@ -18,6 +18,7 @@ import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
 import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.data.TagMode
 import com.bumptech.glide.Glide
 import com.google.android.material.color.MaterialColors
 import com.bumptech.glide.load.resource.bitmap.CenterCrop
@@ -32,12 +33,17 @@ import java.io.File
 /**
  * 悬浮球点开后弹出的表情选择面板。
  *
- * 只做三件事：列出表情（最近 / 全部 / 收藏，可再叠加一个标签）→ 用户点一张 → 交给
+ * 只做三件事：列出表情（最近 / 全部 / 收藏，可再叠加任意多个标签）→ 用户点一张 → 交给
  * [EmojiShare] 分享出去。窗口本身由 [FloatingBallService] 挂载和移除，
  * 这里只管窗口里那棵树。
  *
  * 上排三颗用字符串（而不是资源 id）作为键：与标签行共享一套 chip 渲染逻辑，
  * 字符串比较最省事。
+ *
+ * 标签行跟主界面筛选条是同一套读法（v0.2.007，用户 m10764）：可以同时选多个，每个标签各记
+ * 一份合并方式，chip 上写着它（& 交 / | 并 / ! 非）。点没选中的＝选上（默认交），再点已选中的＝
+ * 换下一种，「不限」＝一次清空。悬浮球是「赶紧挑一张发出去」的场景，所以没再摆一颗 ×：多按
+ * 一下就回到没选，也少一个点不中的小目标。
  */
 class SendPanelController(
     private val host: Context,
@@ -80,11 +86,17 @@ class SendPanelController(
     private var current: String = ""
     private var loadJob: Job? = null
 
-    /** 标签 chip 和它对应的标签 id；id = null 是「不限」。 */
+    /** 标签行上的 chip；id = null 是「不限」。 */
     private var tagChips: List<TagChip> = emptyList()
-    private var currentTagId: Long? = null
 
-    private data class TagChip(val id: Long?, val view: TextView)
+    /**
+     * 选中的标签 → 它自己的合并方式，按选中的先后保序。
+     *
+     * 只有写进这张表的标签参与筛选，没写的按「交」算；表空＝不按标签筛。
+     */
+    private val selectedTags = LinkedHashMap<Long, TagMode>()
+
+    private data class TagChip(val id: Long?, val name: String, val view: TextView)
 
     fun bind() {
         root.findViewById<View>(R.id.sendPanelMask).setOnClickListener { onClose() }
@@ -170,8 +182,9 @@ class SendPanelController(
     }
 
     /**
-     * 标签行。第一个永远是「不限」，后面每个标签一个 chip —— 单选，不搞多选：
-     * 悬浮球面板是「赶紧挑一张发出去」的场景，多选只会让人多点两下。
+     * 标签行。第一个永远是「不限」（点它＝把选中的标签一次清空），后面每个标签一个 chip：
+     * 可以同时选多个，每个各记一份合并方式（用户 m10764）。
+     *
      * 一个标签都没有时整行藏起来，否则面板上会多出一行只有「不限」的空壳。
      */
     private fun buildTagChips(tags: List<TagEntity>) {
@@ -179,15 +192,16 @@ class SendPanelController(
         tagChipContainer.removeAllViews()
         if (tags.isEmpty()) {
             tagChips = emptyList()
+            selectedTags.clear()
             return
         }
 
         val entries: List<Pair<Long?, String>> =
             listOf(null to host.getString(R.string.overlay_tag_none)) + tags.map { it.id to it.name }
         tagChips = entries.map { (id, label) ->
-            val chip = createChip(label) { selectTag(id) }
+            val chip = createChip(label) { onTagChip(id) }
             tagChipContainer.addView(chip, chipParams())
-            TagChip(id, chip)
+            TagChip(id, label, chip)
         }
         refreshTagChips()
     }
@@ -224,7 +238,8 @@ class SendPanelController(
             emptyView.visibility = if (blank) View.VISIBLE else View.GONE
             if (blank) {
                 emptyView.text = when {
-                    currentTagId != null -> host.getString(R.string.overlay_empty_tag)
+                    selectedTags.size > 1 -> host.getString(R.string.overlay_empty_tags)
+                    selectedTags.isNotEmpty() -> host.getString(R.string.overlay_empty_tag)
                     current == host.getString(R.string.overlay_chip_recent) ->
                         host.getString(R.string.overlay_empty_recent)
                     else -> host.getString(R.string.overlay_empty)
@@ -235,15 +250,27 @@ class SendPanelController(
     }
 
     /**
-     * 选中标签（null = 不限）。
+     * 点标签行上的 chip（null = 「不限」）。
+     *
+     * 没选中的选上（默认交），已经选上的换下一种：交 → 并 → 非 → 取消；「不限」把选中的标签
+     * 一次清空（用户 m10764，跟主界面筛选条上那套循环同一个读法）。
      *
      * 标签和上排那三颗是两个独立维度，可以叠加。唯一的例外是「最近」：它本来就不是筛选，
      * 叠加标签后语义会变成「所有挂了这个标签的图」，与 chip 上的字对不上，
      * 所以一旦选了标签就自动切到「全部」。
      */
-    private fun selectTag(tagId: Long?) {
-        currentTagId = tagId
-        if (tagId != null && current == host.getString(R.string.overlay_chip_recent)) {
+    private fun onTagChip(tagId: Long?) {
+        if (tagId == null) {
+            if (selectedTags.isNotEmpty()) selectedTags.clear()
+        } else {
+            when (selectedTags[tagId]) {
+                null -> selectedTags[tagId] = TagMode.ALL
+                TagMode.ALL -> selectedTags[tagId] = TagMode.ANY
+                TagMode.ANY -> selectedTags[tagId] = TagMode.EXCLUDE
+                TagMode.EXCLUDE -> selectedTags.remove(tagId)
+            }
+        }
+        if (selectedTags.isNotEmpty() && current == host.getString(R.string.overlay_chip_recent)) {
             current = host.getString(R.string.overlay_chip_all)
             refreshChips()
         }
@@ -252,12 +279,14 @@ class SendPanelController(
     }
 
     private suspend fun loadItems(): List<EmojiEntity> {
-        val tagId = currentTagId ?: return query(current).first()
+        if (selectedTags.isEmpty()) return query(current).first()
         val favorites = host.getString(R.string.overlay_chip_favorites)
+        // 多个标签 + 每个自己的合并方式，跟主界面走的是同一条查询路径（EmojiQuery 拼 SQL）
         return repository.findFiltered(
             EmojiFilter(
                 favoritesOnly = current == favorites,
-                tagIds = listOf(tagId)
+                tagIds = selectedTags.keys.toList(),
+                tagModes = selectedTags.toMap()
             )
         )
     }
@@ -266,9 +295,26 @@ class SendPanelController(
         chipViews.forEach { chip -> paintChip(chip, chip.text.toString() == current) }
     }
 
+    /**
+     * 标签 chip 的样子：选中的写成「& 猫」（符号是它自己的合并方式），没选的只写名字；
+     * 「不限」选中 = 一个标签都没选。
+     */
     private fun refreshTagChips() {
-        tagChips.forEach { chip -> paintChip(chip.view, chip.id == currentTagId) }
+        tagChips.forEach { chip ->
+            val mode = chip.id?.let { selectedTags[it] }
+            chip.view.text = if (mode != null) matchSymbol(mode) + " " + chip.name else chip.name
+            paintChip(chip.view, if (chip.id == null) selectedTags.isEmpty() else mode != null)
+        }
     }
+
+    /** 交 / 并 / 非的符号，跟主界面筛选条、搜索框那套语法（& | !）是同一套写法。 */
+    private fun matchSymbol(mode: TagMode): String = host.getString(
+        when (mode) {
+            TagMode.ALL -> R.string.tag_mode_symbol_all
+            TagMode.ANY -> R.string.tag_mode_symbol_any
+            TagMode.EXCLUDE -> R.string.tag_mode_symbol_not
+        }
+    )
 
     private fun paintChip(chip: TextView, selected: Boolean) {
         // 选中态是「主题色填充 + 深墨字」：字色得从主题取 —— 浅色模式的主色是图标

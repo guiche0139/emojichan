@@ -4,6 +4,7 @@
     <string name="search_hint">搜索表情名或标签</string>
     <string name="filter_all">全部</string>
     <string name="filter_favorites">收藏</string>
+    <string name="filter_recent">最近</string>
     <string name="tag_panel_title">标签</string>
     <string name="tag_panel_empty">暂无标签</string>
     <string name="tag_rename_title">重命名标签</string>
@@ -135,6 +136,7 @@
     <string name="overlay_tag_none">不限</string>
     <string name="overlay_empty">暂无表情，先在应用里导入</string>
     <string name="overlay_empty_tag">这个标签下没有表情</string>
+    <string name="overlay_empty_tags">这些标签下没有表情</string>
     <string name="overlay_empty_recent">没有发送过的表情，可在「全部」里选择</string>
     <string name="overlay_started">悬浮球已开启，在选定的应用里显示</string>
     <string name="overlay_started_manual">悬浮球已开启。只在微信和 QQ 里显示需要先在系统设置里开启「表情自动发送」</string>
@@ -210,6 +212,12 @@
     <string name="a11y_indicator_sub">自动发送功能</string>
     <string name="settings_section_send">发送</string>
     <string name="settings_section_route">表情发送方式</string>
+    <string name="settings_section_recents">最近任务</string>
+    <string name="settings_hide_recents_title">在最近任务里隐藏</string>
+    <string name="settings_hide_recents_hint_off">关。打开后 EmojiChan 不再出现在系统的最近任务列表里，手滑也划不掉它</string>
+    <string name="settings_hide_recents_hint_on">已开启：最近任务里看不到 EmojiChan，也就划不掉它。要彻底退出请到系统设置里「强行停止」</string>
+    <string name="settings_hide_recents_on_toast">已隐藏：最近任务列表里不再有 EmojiChan</string>
+    <string name="settings_hide_recents_off_toast">已恢复：EmojiChan 会重新出现在最近任务里</string>
     <string name="settings_section_diag">诊断</string>
     <string name="settings_section_about">关于</string>
 
@@ -217,6 +225,10 @@
     <string name="settings_overlay_sub">在选定的应用里显示悬浮球，用于选取并发送表情（默认微信 + QQ）</string>
     <string name="settings_overlay_permission_needed">开启悬浮球需要先允许「显示在其他应用上层」</string>
     <string name="detail_title">表情详情</string>
+    <!-- 详情页左右划换图 + 顶上的 (第几张 / 共几张)（v0.2.013，用户 m11668 第 1 条） -->
+    <string name="detail_position">(%1$d/%2$d)</string>
+    <string name="detail_first_toast">已经是第一张了</string>
+    <string name="detail_last_toast">已经是最后一张了</string>
     <string name="settings_route_title">发送到微信 / QQ 的方式</string>
     <string name="settings_route_album">相册（默认）</string>
     <string name="settings_route_share">分享</string>
@@ -310,6 +322,8 @@
     <!-- ==================== 接收分享 ==================== -->
     <string name="share_import_ok">已从分享导入 %1$d 张表情</string>
     <string name="share_import_failed">导入失败：文件无法读取</string>
+    <!-- 分享进来却一个图片地址都没解出来（emc-2-019：QQ 的分享以前在这里静默返回） -->
+    <string name="share_import_empty">没读到图片：这次分享里没有可用的图片地址（详见发送日志）</string>
 
     <!-- ==================== 标签（v0.1.306 起；v0.1.315 去掉「包」） ==================== -->
     <string name="btn_filter_tags">筛选</string>
@@ -320,6 +334,8 @@
     <!-- 面板顶上那行功能 chip（v0.2.004，用户 m10194 / m10201）：v0.2.005 起只剩新建 / 管理 -->
     <string name="tag_action_new">新建</string>
     <string name="tag_action_manage">管理</string>
+    <!-- 标签下拉第一行的「重置」（v0.2.013，用户 m11668 第 6 条）：一次清掉当前所有标签选择 -->
+    <string name="tag_action_reset">重置</string>
     <!-- 已选标签在筛选条上的合并方式前缀（v0.2.005，用户 m10282）：跟搜索语法同一套写法 -->
     <string name="tag_mode_symbol_all">&amp;</string>
     <string name="tag_mode_symbol_any">|</string>
@@ -361,6 +377,7 @@
     <string name="archive_export_empty">库里还没有表情，没有可导出的内容。</string>
     <string name="archive_export_done">已导出 %1$d 张表情、%2$d 个标签（%3$s）</string>
     <string name="archive_export_done_missing">\n\n其中 %1$d 张的图片文件已经找不到了，没有进包。</string>
+    <string name="archive_export_done_ignored">\n\n忽略名单 %1$d 条已随包带走。</string>
     <string name="archive_export_failed">导出失败：%1$s</string>
 
     <string name="archive_import_mode_title">怎么导入</string>
@@ -373,6 +390,8 @@
     <string name="archive_import_done">已导入 %1$d 张表情、%2$d 个标签</string>
     <string name="archive_import_done_skipped">，跳过重复的 %1$d 张</string>
     <string name="archive_import_done_failed">，%1$d 张读不出来</string>
+    <string name="archive_import_done_ignored">，忽略名单恢复 %1$d 条</string>
+    <string name="archive_import_done_ignored_dropped">，忽略名单恢复 %1$d 条（%2$d 条因对应的表情没进包而丢掉）</string>
     <string name="archive_import_failed">导入失败：%1$s</string>
     <string name="archive_err_not_archive">这不是本应用导出的备份包（里面没有清单文件）</string>
     <string name="archive_err_broken">备份包读不了：里面的清单文件坏了</string>
@@ -467,6 +486,41 @@
     <string name="storage_tool_search_title">重复与相似检索</string>
     <string name="storage_tool_search_sub">内容完全相同的与画面相近的列在同一页</string>
 
+    <!--
+      「长时间不使用的表情」（v0.2.013，用户 m11668 第 5 条）：按「多久没发过」挑一个范围，
+      网格里点着选，底下两个出口 —— 导出成只含这些表情的备份包，或者直接删掉。
+      进度、结果、出错的文案复用上面 archive_* / delete_* 那几条，只有这一页自己的说法在这儿。
+    -->
+    <string name="storage_tool_stale_title">长时间不使用的表情</string>
+    <string name="storage_tool_stale_sub">按多久没发过列出来，可单独导出备份或直接删掉</string>
+    <string name="stale_window_never">从未发过</string>
+    <string name="stale_window_90">90 天没发过</string>
+    <string name="stale_window_180">180 天没发过</string>
+    <string name="stale_window_365">1 年没发过</string>
+    <string name="stale_never_used">从未发过</string>
+    <!-- v0.2.013（用户 m11937）：从未发过的表情进 90/180/365 档靠的是「入库多久」，格底要写出来 -->
+    <string name="stale_never_used_added">从未发过 · %1$s</string>
+    <string name="stale_added_days">已添加 %1$d 天</string>
+    <string name="stale_added_months">已添加 %1$d 个月</string>
+    <string name="stale_added_years">已添加 %1$d 年</string>
+    <string name="stale_age_days">%1$d 天没发过</string>
+    <string name="stale_age_months">%1$d 个月没发过</string>
+    <string name="stale_age_years">%1$d 年没发过</string>
+    <string name="stale_summary_format">共 %1$d 张，其中 %2$d 张从未发过</string>
+    <string name="stale_selection_format">已选 %1$d 张</string>
+    <string name="stale_selection_hint">点图片选中要处理的，或者按「全选」</string>
+    <string name="stale_select_all">全选</string>
+    <string name="stale_deselect_all">取消全选</string>
+    <string name="stale_export">导出为 emcpack</string>
+    <string name="stale_delete">删除</string>
+    <string name="stale_empty_never">没有从未发过的表情</string>
+    <string name="stale_empty_window">这个范围里没有符合条件的表情</string>
+    <string name="stale_export_done">已把 %1$d 张表情导出到备份包（%2$s）</string>
+    <string name="stale_delete_confirm_title">删除这些表情？</string>
+    <string name="stale_delete_confirm_message">将删除选中的 %1$d 张表情（%2$s）。删除之后应用里就没有它们了，这一步撤销不了；以前导出过的备份包不受影响。</string>
+    <string name="stale_delete_done">已删掉 %1$d 张，约腾出 %2$s</string>
+    <string name="stale_delete_kept">\n\n其中 %1$d 张的图片文件删不掉，暂时还留在库里。</string>
+
     <!-- 清除缓存（v0.1.409；用户 m08399 第 1 条） -->
     <string name="storage_clear_cache_title">清除缓存</string>
     <string name="storage_clear_cache_sub">删除缩略图等临时文件，不影响表情库</string>
@@ -497,6 +551,10 @@
     <string name="compress_section_mid">1 MB – 10 MB</string>
     <string name="compress_section_small">1 MB 以下</string>
     <string name="compress_section_meta">%1$d 张 · %2$s</string>
+    <!-- 压缩页每段标题上的操作（v0.2.013，用户 m11668 第 2 条） -->
+    <string name="compress_section_all">全选本档</string>
+    <string name="compress_section_clear">取消本档</string>
+    <string name="compress_section_chosen"> · 已选 %1$d 张</string>
     <string name="compress_item_meta">%1$d×%2$d</string>
     <string name="compress_badge_animated">动图</string>
     <string name="compress_badge_missing">文件不在了</string>
@@ -580,21 +638,23 @@
     <!-- ==================== 「不像同一张」的忽略名单（v0.2.006，用户 m10497） ==================== -->
     <string name="similar_ignore_group">忽略这组</string>
     <string name="similar_ignore_title">忽略这 %1$d 张之间的相似？</string>
-    <string name="similar_ignore_message">这一组里每两张都会被记下来，之后不再被判为「画面相近」。表情本身不受影响、也不会被删掉，随时可以在「忽略列表」里恢复。</string>
+    <string name="similar_ignore_message">这 %1$d 张会记成一条，之后它们之间不再被判为「画面相近」。表情本身不受影响、也不会被删掉，随时可以在「忽略列表」里撤销。</string>
     <string name="similar_ignore_ok">忽略</string>
     <string name="similar_ignore_done">这组已忽略（记下 %1$d 对）</string>
     <string name="similar_ignore_list">忽略列表（%1$d）</string>
     <string name="similar_ignore_list_title">忽略列表</string>
-    <string name="similar_ignore_list_count">共 %1$d 对 · 点「不再忽略」可以恢复</string>
-    <string name="similar_ignore_list_empty">还没有忽略过任何一对。\n\n在「画面相近」的组里点「忽略这组」，那几张之间就不会再被判为相近。</string>
+    <string name="similar_ignore_page_count">共 %1$d 条 · 覆盖 %2$d 对 · 这些组合不再被判为「画面相近」</string>
+    <string name="similar_ignore_list_empty">还没有忽略过任何一组。\n\n在「画面相近」的组里点「忽略这组」，那几张之间就不会再被判为相近。</string>
     <string name="similar_ignore_row_desc">%1$s ↔ %2$s</string>
-    <string name="similar_ignore_remove">不再忽略</string>
-    <string name="similar_ignore_removed">已恢复 %1$s ↔ %2$s</string>
+    <string name="similar_ignore_row_many">%1$d 张：%2$s</string>
+    <string name="similar_ignore_row_pairs">覆盖 %1$d 对</string>
+    <string name="similar_ignore_row_more">+%1$d</string>
+    <string name="similar_ignore_undo">撤销</string>
+    <string name="similar_ignore_undone">已撤销这一条（%1$d 张）</string>
     <string name="similar_ignore_clear">全部恢复</string>
-    <string name="similar_ignore_clear_title">恢复全部 %1$d 对？</string>
+    <string name="similar_ignore_clear_title">恢复全部 %1$d 条？</string>
     <string name="similar_ignore_clear_message">恢复之后这些「不像同一张」的判定就都没了，检索页会按原来的规则重新分组。表情本身一直不受影响。</string>
-    <string name="similar_ignore_cleared">已恢复全部 %1$d 对</string>
-    <string name="similar_ignore_close">关闭</string>
+    <string name="similar_ignore_cleared">已恢复全部 %1$d 条</string>
     <!-- ==================== 合并检索页（v0.1.411：两段同页，一次比对） ==================== -->
     <string name="search_summary">全库 %1$d 张 · 内容完全相同 %2$d 组 · 画面相近 %3$d 组</string>
     <string name="search_scan_title">正在比对</string>
@@ -602,6 +662,10 @@
     <string name="search_scan_files">正在比对文件内容 %1$d / %2$d 张…</string>
     <string name="search_scan_frames">正在比对画面 %1$d / %2$d 张…</string>
     <string name="search_scan_stopped">已停止比对</string>
+    <string name="search_scan_start">开始检测</string>
+    <string name="search_scan_again">重新检测</string>
+    <string name="search_start_title">查一查有没有重复的表情</string>
+    <string name="search_start_note">内容完全相同的按文件字节比，画面相近的按画面结构比。\n图片多时要读一遍文件，需要点时间；中途可以停，算好的指纹会留着，下次检测更快。</string>
     <string name="search_section_duplicate">内容完全相同</string>
     <string name="search_section_duplicate_note">按文件内容比对：字节完全一致才归为一组</string>
     <string name="search_section_duplicate_none">没有内容完全相同的表情</string>

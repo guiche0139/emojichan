@@ -26,6 +26,12 @@ object EmojiQuery {
             sql.append(" AND isFavorite = 1")
         }
 
+        // 「最近」= 用过的（发送过一次以上）：没发过的 lastUsedTime 还是 0，见 EmojiDao.getRecentEmojis。
+        // 顺序不在这里定 —— 界面上「最近」按使用时间倒序，那是 ViewModel 的事。
+        if (filter.recentOnly) {
+            sql.append(" AND lastUsedTime > 0")
+        }
+
         // 搜索条件：组内 AND，组间 OR（& 先算、/ 后算）
         val groups = filter.expr?.groups?.filter { it.isNotEmpty() }.orEmpty()
         if (groups.isNotEmpty()) {

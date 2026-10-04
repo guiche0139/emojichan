@@ -34,11 +34,24 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         private const val MB = 1024L * 1024L
         private const val BIG = 10 * MB
+
+        /** 段的先后就是按体积从大到小；划段的标准只有 [sectionKeyOf] 一处。 */
+        private val SECTION_ORDER = listOf(
+            R.string.compress_section_big,
+            R.string.compress_section_mid,
+            R.string.compress_section_small
+        )
     }
 
     private val rows = mutableListOf<CompressRow>()
     private val selectedIds = linkedSetOf<Long>()
     private var files: List<EmojiFile> = emptyList()
+
+    /**
+     * 折叠起来的段（键是段标题的资源 id，用户 m11668 第 2 条）。
+     * 折叠只是不铺这一段的格子，勾选照旧保留 —— 折起来不等于放弃。
+     */
+    private val collapsedSections = mutableSetOf<Int>()
 
     var onSelectionChanged: (() -> Unit)? = null
 
@@ -71,17 +84,47 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         notifySelectionChanged()
     }
 
+    /** 段标题整行点一下：折叠 / 展开这一段（用户 m11668 第 2 条）。 */
+    fun toggleSectionFold(titleRes: Int) {
+        if (!collapsedSections.add(titleRes)) collapsedSections.remove(titleRes)
+        rebuild()
+        notifyDataSetChanged()
+        onSelectionChanged?.invoke()
+    }
+
+    /** 段标题右边的「全选本档」：这一段里能压的全勾上，已经全勾上就全摘掉。 */
+    fun toggleSectionSelection(titleRes: Int) {
+        val group = sectionFiles(titleRes).filter { it.selectable }
+        if (group.isEmpty()) return
+        if (group.all { selectedIds.contains(it.id) }) {
+            group.forEach { selectedIds.remove(it.id) }
+        } else {
+            group.forEach { selectedIds.add(it.id) }
+        }
+        notifySelectionChanged()
+    }
+
     private fun rebuild() {
         rows.clear()
         val sorted = files.sortedByDescending { it.bytes }
-        addSection(R.string.compress_section_big, sorted.filter { it.bytes >= BIG })
-        addSection(R.string.compress_section_mid, sorted.filter { it.bytes in MB until BIG })
-        addSection(R.string.compress_section_small, sorted.filter { it.bytes < MB })
+        SECTION_ORDER.forEach { key -> addSection(key, sorted.filter { sectionKeyOf(it) == key }) }
     }
+
+    /** 这张图落在哪一段。段的划分只写在这里，[rebuild] 和段上的「全选本档」都问它。 */
+    private fun sectionKeyOf(file: EmojiFile): Int = when {
+        file.bytes >= BIG -> R.string.compress_section_big
+        file.bytes >= MB -> R.string.compress_section_mid
+        else -> R.string.compress_section_small
+    }
+
+    /** 某一段里的全部文件（不分可不可压）。 */
+    private fun sectionFiles(key: Int): List<EmojiFile> = files.filter { sectionKeyOf(it) == key }
 
     private fun addSection(titleRes: Int, group: List<EmojiFile>) {
         if (group.isEmpty()) return
         rows.add(CompressRow.Section(titleRes, group.size, group.sumOf { it.bytes }))
+        // 折起来的那一段只留标题这一行；勾选不动，展开还是原来那些
+        if (titleRes in collapsedSections) return
         group.forEach { rows.add(CompressRow.Item(it)) }
     }
 
@@ -122,16 +165,38 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     }
 
     private inner class SectionHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val fold: TextView = view.findViewById(R.id.compressSectionFold)
         private val title: TextView = view.findViewById(R.id.compressSectionTitle)
         private val meta: TextView = view.findViewById(R.id.compressSectionMeta)
+        private val selectAll: TextView = view.findViewById(R.id.compressSectionSelectAll)
 
         fun bind(row: CompressRow.Section) {
+            val context = itemView.context
+            val collapsed = row.titleRes in collapsedSections
+            val group = sectionFiles(row.titleRes)
+            val selectable = group.filter { it.selectable }
+            val chosen = group.count { selectedIds.contains(it.id) }
+
+            fold.text = if (collapsed) "▸" else "▾"
             title.setText(row.titleRes)
-            meta.text = itemView.context.getString(
-                R.string.compress_section_meta,
-                row.count,
-                StorageUsage.formatBytes(itemView.context, row.bytes)
-            )
+            meta.text = buildString {
+                append(
+                    context.getString(
+                        R.string.compress_section_meta,
+                        row.count,
+                        StorageUsage.formatBytes(context, row.bytes)
+                    )
+                )
+                // 折起来之后，这一段的勾选在屏幕上只剩这行字看得见（底部合计只算总数）
+                if (chosen > 0) append(context.getString(R.string.compress_section_chosen, chosen))
+            }
+
+            val allChosen = selectable.isNotEmpty() && selectable.all { selectedIds.contains(it.id) }
+            selectAll.setText(if (allChosen) R.string.compress_section_clear else R.string.compress_section_all)
+            selectAll.isEnabled = selectable.isNotEmpty()
+            selectAll.alpha = if (selectable.isNotEmpty()) 1f else 0.4f
+            selectAll.setOnClickListener { toggleSectionSelection(row.titleRes) }
+            itemView.setOnClickListener { toggleSectionFold(row.titleRes) }
         }
     }
 

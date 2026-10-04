@@ -24,6 +24,7 @@ object UiPrefs {
     private const val KEY_BALL_SIZE = "ball_size_dp"
     private const val KEY_SORT_FIELD = "sort_field"
     private const val KEY_SORT_DESC = "sort_desc"
+    private const val KEY_HIDE_RECENTS = "hide_from_recents"
 
     // ---------------- 主题色 ----------------
 
@@ -178,6 +179,16 @@ object UiPrefs {
             .putString(KEY_SORT_FIELD, if (field in SORT_FIELDS) field else SORT_TIME)
             .putBoolean(KEY_SORT_DESC, desc)
             .apply()
+    }
+
+    // ---------------- 最近任务 ----------------
+
+    /** 在系统「最近任务」里隐藏（用户 m11668 第 3 条）：手滑划不掉后台。 */
+    fun hideFromRecents(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_HIDE_RECENTS, false)
+
+    fun setHideFromRecents(context: Context, hide: Boolean) {
+        prefs(context).edit().putBoolean(KEY_HIDE_RECENTS, hide).apply()
     }
 
     private fun prefs(context: Context) =

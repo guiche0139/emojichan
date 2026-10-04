@@ -1,10 +1,8 @@
 package com.aris.emojichan.storage
 
-import android.content.DialogInterface
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
-import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -43,12 +41,17 @@ import kotlinx.coroutines.withContext
  * 中途可以停：停下来的话已经算出来的指纹照样写回 image_features，下次进来少读一批文件
  * （[FeatureCache] 按体积 + 修改时间判断旧值还算不算数）。
  *
+ * 进页面不再自动比一遍（v0.2.007，用户 m10764）：全库比一次要读一遍文件，而用户可能只是进来看
+ * 上一轮的结果。所以中间摆一颗「开始检测」，查不查由用户说了算；检测完那颗按钮也还在，随时能重来。
+ * 改了底线、改了忽略名单仍然当场重排 —— 那两件事只动内存里的哈希，不读盘。
+ *
  * 删除的两种口子也各归各的：完全相同的组里「该留哪张」有默认答案，按钮一按删掉其余；
  * 画面相近的组没有对错，点缩略图选中要删的，底部那一条按一下才删。
  *
  * 「画面相近」还有第三种处理（v0.2.006，用户 m10497）：有些组本来就不是同一个表情，这是主观判断，
  * 调底线也调不出来。所以每组底下多一颗「忽略这组」—— 把这一组里每一对都记进忽略名单
- * （见 [SimilarIgnore]），之后无论底线怎么变都不再同组；名单在顶部「忽略列表」里查看与恢复。
+ * （见 [SimilarIgnore]），之后无论底线怎么变都不再同组；名单在顶部「忽略列表」里查看与恢复
+ * —— v0.2.008（用户 m10953）起那是独立一页（[SimilarIgnoreActivity]），不再是挤在对话框里的 40% 屏高。
  */
 class SearchActivity : AppCompatActivity() {
 
@@ -62,9 +65,15 @@ class SearchActivity : AppCompatActivity() {
     private lateinit var selectionBar: View
     private lateinit var selectionText: TextView
 
+    /** 还没检测过时中间那块引导（说明 + 「开始检测」）。 */
+    private lateinit var startState: View
+
     /** 这一轮比对了多少张（含没找到伴的），汇总要用。 */
     private var scanned = 0
     private var scanJob: Job? = null
+
+    /** 重排分组那一趟（改底线 / 改忽略名单），只跑最后一次。 */
+    private var regroupJob: Job? = null
 
     private var items: List<DuplicateFinder.Item> = emptyList()
     private var itemById: Map<Long, DuplicateFinder.Item> = emptyMap()
@@ -81,8 +90,19 @@ class SearchActivity : AppCompatActivity() {
     /** 画面相近的底线（差几位以内算相近），进页面时从 [SimilarPrefs] 读一次。 */
     private var threshold = SimilarFinder.DEFAULT
 
-    /** 「不像同一张」的那些对：键是 [SimilarIgnore.key] 那种「小id:大id」。进页面读一次，扫完剪一次。 */
+    /** 「不像同一张」的记录：一次「忽略这组」记一条（见 [SimilarIgnore]）。进页面读一次，扫完剪一次。 */
     private var ignored: Set<String> = emptySet()
+        set(value) {
+            field = value
+            // 判定用的查表版跟着一起换：分组时问的是「这张能跟谁同组」，不再逐对拼键（v0.2.007）
+            banned = SimilarIgnore.bannedOf(value)
+        }
+
+    /** [ignored] 的查表版，[SimilarFinder] 收的就是它。 */
+    private var banned: Map<Long, Set<Long>> = emptyMap()
+
+    /** 判定用的一次查询：没有禁忌的图返回空集，分组时连组里逐个成员的比对都跳过。 */
+    private fun bannedOf(id: Long): Set<Long> = banned[id] ?: emptySet()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,13 +135,21 @@ class SearchActivity : AppCompatActivity() {
         list.adapter = adapter
 
         findViewById<MaterialButton>(R.id.btnSearchDelete).setOnClickListener { askDeleteSelected() }
-        ignored = SimilarPrefs.ignoredPairs(this)
-        ignoredButton.setOnClickListener { showIgnoreList() }
+        ignored = SimilarPrefs.ignoredRecords(this)
+        ignoredButton.setOnClickListener { startActivity(Intent(this, SimilarIgnoreActivity::class.java)) }
+        findViewById<MaterialButton>(R.id.btnSearchScan).setOnClickListener { scan() }
+        // 检测过之后引导那块就不见了，再想重来走汇总行上这颗
+        findViewById<MaterialButton>(R.id.btnSearchRescan).setOnClickListener { scan() }
+        startState = findViewById(R.id.searchStartState)
         renderSelection()
         renderIgnoredButton()
+        renderEmpty()
     }
 
-    /** 每次回到这一页都重新比一遍：删过图、导入过新图，结果就不一样了。缓存命中时很便宜。 */
+    /**
+     * 回到这一页不再自动比一遍（v0.2.007，用户 m10764）：比不比由中间那颗按钮说了算。
+     * 这里只处理两件不读盘的事 —— 底线和忽略名单可能在别处改过，对不上就拿内存里的哈希重排。
+     */
     override fun onResume() {
         super.onResume()
         if (scanJob?.isActive == true) return
@@ -132,18 +160,19 @@ class SearchActivity : AppCompatActivity() {
             regroup()
         }
         // 忽略名单也可能变过（从详情页回来时删掉过几张）：重新读一份，对不上就照它重分组
-        val currentIgnored = SimilarPrefs.ignoredPairs(this)
+        val currentIgnored = SimilarPrefs.ignoredRecords(this)
         if (currentIgnored != ignored) {
             ignored = currentIgnored
             regroup()
             renderIgnoredButton()
         }
-        scan()
     }
 
     private fun scan() {
         // 懒启动：先把 job 记下来再跑，取消按钮才有东西可取消。
         val job = lifecycleScope.launch(start = CoroutineStart.LAZY) {
+            // 按钮一出手就先收起来：这一轮跑完之前不该有第二个入口
+            startState.visibility = View.GONE
             val loaded = viewModel.getAllEmojisOnce().map { DuplicateFinder.itemOf(it) }
             val cached = viewModel.allImageFeatures().associateBy { it.emojiId }
             val fresh = HashMap<Long, ImageFeatureEntity>()
@@ -189,7 +218,7 @@ class SearchActivity : AppCompatActivity() {
                 val similar = SimilarFinder.find(
                     items = pool,
                     threshold = threshold,
-                    ignored = { a, b -> SimilarIgnore.contains(ignored, a, b) },
+                    banned = ::bannedOf,
                     hashOf = { item ->
                         val base = fresh[item.id] ?: cached[item.id]
                         val hash = FeatureCache.dhashOf(base, item)
@@ -224,6 +253,8 @@ class SearchActivity : AppCompatActivity() {
                     R.string.search_scan_stopped,
                     Toast.LENGTH_SHORT
                 ).show()
+                // 停在这一轮：上一轮的结果（如果有）照旧留着，没有结果就把「开始检测」还回去
+                renderEmpty()
                 return@launch
             }
             BusyDialog.dismiss(this@SearchActivity, dialog)
@@ -233,12 +264,12 @@ class SearchActivity : AppCompatActivity() {
 
             items = result.items
             itemById = result.items.associateBy { it.id }
-            // 表情删掉之后它那几对就不再成立了，顺手剪掉 —— 名单不该越攒越多
+            // 表情删掉之后它牵涉的记录就收窄了，顺手剪一次 —— 名单不该越攒越多
             val alive = result.items.map { it.id }.toSet()
             val kept = SimilarIgnore.keepAlive(ignored, alive)
             if (kept != ignored) {
                 ignored = kept
-                SimilarPrefs.setIgnoredPairs(this@SearchActivity, kept)
+                SimilarPrefs.setIgnoredRecords(this@SearchActivity, kept)
             }
             duplicateIds = result.duplicateIds.toMutableSet()
             pool = result.pool
@@ -269,20 +300,25 @@ class SearchActivity : AppCompatActivity() {
         val items: List<DuplicateFinder.Item>
     )
 
-    /** 改了底线：不需要读盘，哈希都在内存里，重算一次分组就好。 */
+    /**
+     * 改了底线或忽略名单：不需要读盘，哈希都在内存里，重排一次分组就好。
+     *
+     * 排一遍要在几百万个数字上比一遍，搁主线程就是一次看得见的卡顿（用户 m10698），
+     * 所以丢到后台线程算，算完回主线程交给 adapter。
+     */
     private fun regroup() {
         if (scanned == 0) return
-        val groups = SimilarFinder.group(
-            pool,
-            hashes,
-            threshold,
-            ignored = { a, b -> SimilarIgnore.contains(ignored, a, b) }
-        )
-        adapter.threshold = threshold
-        adapter.submitSimilar(groups, hashes)
-        renderSelection()
-        renderSummary()
-        renderEmpty()
+        regroupJob?.cancel()
+        regroupJob = lifecycleScope.launch {
+            val groups = withContext(Dispatchers.Default) {
+                SimilarFinder.group(pool, hashes, threshold, ::bannedOf)
+            }
+            adapter.threshold = threshold
+            adapter.submitSimilar(groups, hashes)
+            renderSelection()
+            renderSummary()
+            renderEmpty()
+        }
     }
 
     /** 顶部那行汇总：两段各找到几组，都写在一行里。 */
@@ -295,8 +331,12 @@ class SearchActivity : AppCompatActivity() {
         )
     }
 
-    /** 库里一张都没有时，整页只在中间说一句。 */
+    /**
+     * 中间那块空态有两种：还没检测过（摆一颗「开始检测」，见 [scan]），
+     * 以及检测完了但库里一张都没有（说一句「库里还没有表情」）。
+     */
     private fun renderEmpty() {
+        startState.visibility = if (scanned == 0) View.VISIBLE else View.GONE
         emptyState.visibility = if (scanned > 0 && items.isEmpty()) View.VISIBLE else View.GONE
     }
 
@@ -315,7 +355,7 @@ class SearchActivity : AppCompatActivity() {
         )
     }
 
-    /** 「忽略列表（N）」那颗按钮：数目写在按钮上，用户才知道里面有没有东西。 */
+    /** 「忽略列表（N）」那颗按钮：数目写在按钮上，用户才知道里面有没有东西。点它去独立那一页。 */
     private fun renderIgnoredButton() {
         ignoredButton.text = getString(R.string.similar_ignore_list, ignored.size)
     }
@@ -325,103 +365,26 @@ class SearchActivity : AppCompatActivity() {
         if (group.members.size < 2) return
         MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.similar_ignore_title, group.members.size))
-            .setMessage(R.string.similar_ignore_message)
+            .setMessage(getString(R.string.similar_ignore_message, group.members.size))
             .setNegativeButton(R.string.dialog_cancel, null)
             .setPositiveButton(R.string.similar_ignore_ok) { _, _ -> runIgnoreGroup(group) }
             .show()
     }
 
     /**
-     * 把这一组里每一对都记进忽略名单（见 [SimilarIgnore]），当场重分组 —— 用户点完就该看见它消失。
+     * 把这一组记成一条忽略记录（见 [SimilarIgnore]），当场重分组 —— 用户点完就该看见它消失。
      *
-     * 记「对」而不是记「这一组」：换一档底线、库里增删一张，分组结果就会重新洗牌，
-     * 按组记的话过两天就对不上了。
+     * 记「这一次点中的是哪几张」而不是记「这一组」：换一档底线、库里增删一张，分组结果就会重新洗牌，
+     * 按组记的话过两天就对不上了。一条记录也不等于「这几张此后永远同组」，只是它们之间不再算相近。
      */
     private fun runIgnoreGroup(group: SimilarFinder.Group) {
-        val added = SimilarIgnore.keysIn(group.members.map { it.id })
-        ignored = ignored + added
-        SimilarPrefs.setIgnoredPairs(this, ignored)
+        val ids = group.members.map { it.id }
+        val record = SimilarIgnore.recordOf(ids) ?: return
+        ignored = ignored + record
+        SimilarPrefs.setIgnoredRecords(this, ignored)
         regroup()
         renderIgnoredButton()
-        Toast.makeText(this, getString(R.string.similar_ignore_done, added.size), Toast.LENGTH_SHORT)
-            .show()
-    }
-
-    /** 忽略名单：一对一行，可以逐对恢复，也可以一次全恢复。 */
-    private fun showIgnoreList() {
-        val view = layoutInflater.inflate(R.layout.dialog_similar_ignore, null)
-        val count = view.findViewById<TextView>(R.id.ignoreCount)
-        val empty = view.findViewById<TextView>(R.id.ignoreEmpty)
-        val listView = view.findViewById<ListView>(R.id.ignoreList)
-        // 名单长度不定，按屏高夹一下，别让对话框顶出屏幕
-        listView.layoutParams = listView.layoutParams.apply {
-            height = (resources.displayMetrics.heightPixels * 0.4f).toInt()
-        }
-        val rows = IgnoreListAdapter(this)
-        listView.adapter = rows
-
-        val builder = MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.similar_ignore_list_title)
-            .setView(view)
-            .setPositiveButton(R.string.similar_ignore_close, null)
-        if (ignored.isNotEmpty()) {
-            builder.setNeutralButton(R.string.similar_ignore_clear) { _, _ -> askClearIgnored() }
-        }
-        val dialog = builder.show()
-
-        fun refresh() {
-            val list = ignoreRows()
-            rows.submit(list)
-            count.text = getString(R.string.similar_ignore_list_count, list.size)
-            count.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-            empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
-            listView.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-            // 名单空了「全部恢复」就没意义了，收起来
-            dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.visibility =
-                if (list.isEmpty()) View.GONE else View.VISIBLE
-        }
-
-        rows.onRemove = { row ->
-            ignored = ignored - row.key
-            SimilarPrefs.setIgnoredPairs(this, ignored)
-            regroup()
-            renderIgnoredButton()
-            Toast.makeText(
-                this,
-                getString(R.string.similar_ignore_removed, row.a.name, row.b.name),
-                Toast.LENGTH_SHORT
-            ).show()
-            refresh()
-        }
-        refresh()
-    }
-
-    /** 名单里的每一对。解不出来的键、已经不在库里的那张都跳过：那种对既看不出来也没法恢复。 */
-    private fun ignoreRows(): List<IgnoreListAdapter.Row> =
-        ignored.mapNotNull { key ->
-            val pair = SimilarIgnore.idsOf(key) ?: return@mapNotNull null
-            val a = itemById[pair.first] ?: return@mapNotNull null
-            val b = itemById[pair.second] ?: return@mapNotNull null
-            IgnoreListAdapter.Row(key, a, b)
-        }.sortedWith(compareBy({ it.a.createTime }, { it.b.createTime }))
-
-    private fun askClearIgnored() {
-        val total = ignored.size
-        if (total == 0) return
-        MaterialAlertDialogBuilder(this)
-            .setTitle(getString(R.string.similar_ignore_clear_title, total))
-            .setMessage(R.string.similar_ignore_clear_message)
-            .setNegativeButton(R.string.dialog_cancel, null)
-            .setPositiveButton(R.string.similar_ignore_clear) { _, _ -> runClearIgnored(total) }
-            .show()
-    }
-
-    private fun runClearIgnored(total: Int) {
-        ignored = emptySet()
-        SimilarPrefs.setIgnoredPairs(this, ignored)
-        regroup()
-        renderIgnoredButton()
-        Toast.makeText(this, getString(R.string.similar_ignore_cleared, total), Toast.LENGTH_SHORT)
+        Toast.makeText(this, getString(R.string.similar_ignore_done, ids.size * (ids.size - 1) / 2), Toast.LENGTH_SHORT)
             .show()
     }
 

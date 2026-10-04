@@ -4,6 +4,7 @@ import android.content.Context
 import com.aris.emojichan.data.EmojiEntity
 import com.aris.emojichan.data.EmojiTagCrossRef
 import com.aris.emojichan.data.TagEntity
+import com.aris.emojichan.storage.SimilarIgnore
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -55,7 +56,12 @@ object EmojiArchive {
     /** 清单里的格式标记。不是这个值就说明这压根不是本应用的备份包。 */
     const val FORMAT = "emojichan-archive"
 
-    /** 清单格式版本。读到比它更高的版本，说明包来自更新版的应用，本版读不了。 */
+    /**
+     * 清单格式版本。读到比它更高的版本，说明包来自更新版的应用，本版读不了。
+     *
+     * v0.2.012 往清单里加了每张一行的 `id` 与整份 `ignore`（忽略名单）却**不升版本**：
+     * 旧版读包时多出来的键会被忽略，新包照样能在旧版上导入 —— 加字段本身不破坏兼容。
+     */
     const val VERSION = 1
 
     const val MANIFEST_NAME = "emojichan-archive.json"
@@ -87,6 +93,8 @@ object EmojiArchive {
      * @param failed 失败的张数（文件读不到、条目在包里缺失、解不出来）。
      * @param tags 标签数（导出 = 写进清单的；导入 = 由调用方入库时补上实际 ensure 出的数量）。
      * @param bytes 实际搬动的字节数。
+     * @param ignored 忽略名单的条数（导出 = 写进包里的；导入 = 随包恢复出来的）。
+     * @param ignoredDropped 忽略名单里丢掉的条数（只有导入用得上：对应的表情没进库、id 对不上）。
      * @param error 非空表示这次操作整体失败，界面该按它来提示。
      */
     data class Report(
@@ -95,6 +103,8 @@ object EmojiArchive {
         val failed: Int = 0,
         val tags: Int = 0,
         val bytes: Long = 0L,
+        val ignored: Int = 0,
+        val ignoredDropped: Int = 0,
         val error: Error? = null
     )
 
@@ -103,12 +113,20 @@ object EmojiArchive {
      *
      * @param emojis 解出来的待入库记录，id 一律是 0（入库时由数据库分配）。
      * @param tagsOf 与 [emojis] 同序同长：每一项是这张表情在包里挂着的标签名。
+     * @param oldIds 与 [emojis] 同序同长：这张表情在**包里的** id（清单里没写就是 0）。
+     *   忽略名单要跟着搬，就得知道包里的 id 对应本机入库后的哪个 id。
+     * @param takenOldIds 包里 id → 库里已有那张的 id：MERGE 里被「库里已经有一模一样的」顶掉的
+     *   那些（它们没入库，但忽略名单照样能落到库里那张上）。
+     * @param ignored 清单里记着的忽略名单（原始记录串；怎么映射、怎么写回偏好留给调用方）。
      * @param report 只对「解包」负责：它的 tags 恒为 0，标签是调用方入库时 ensure 出来的。
      */
     data class Imported(
         val emojis: List<EmojiEntity>,
         val tagsOf: List<List<String>>,
-        val report: Report
+        val report: Report,
+        val oldIds: List<Long> = emptyList(),
+        val takenOldIds: Map<Long, Long> = emptyMap(),
+        val ignored: List<String> = emptyList()
     )
 
     /**
@@ -130,6 +148,9 @@ object EmojiArchive {
      * 不关 [output]：它是调用方（通常是 ContentResolver）的流，关它是调用方的事；
      * 但 zip 必须 finish()，没写中央目录的 zip 是打不开的。
      * 单张图片的输入流则可以放心 use，它和 zip 是两条独立的流。
+     *
+     * @param ignored 「不像同一张」的忽略名单（[SimilarIgnore] 的记录串）。只写成员全在这次包里的
+     *   那些 —— 名单指向的表情没进包，读包的人无从映射，写进去只会变成一条废记录。
      */
     fun export(
         context: Context,
@@ -137,6 +158,7 @@ object EmojiArchive {
         emojis: List<EmojiEntity>,
         tags: List<TagEntity>,
         links: List<EmojiTagCrossRef>,
+        ignored: Collection<String>,
         appVersion: String,
         onProgress: (done: Int, total: Int) -> Unit
     ): Report {
@@ -161,10 +183,18 @@ object EmojiArchive {
             }
         }
 
+        // 忽略名单只带走「成员全在包里」的那些：映射不上的一律不写（导入端也会照实记 dropped）
+        val exportedIds = plan.mapTo(HashSet(plan.size)) { it.emoji.id }
+        val ignoredInPack = ArrayList<String>(ignored.size)
+        for (record in ignored) {
+            val ids = SimilarIgnore.idsOf(record) ?: continue
+            if (ids.all { it in exportedIds }) SimilarIgnore.recordOf(ids)?.let { ignoredInPack += it }
+        }
+
         val zip = ZipOutputStream(BufferedOutputStream(output, COPY_BUFFER))
         return try {
             zip.putNextEntry(ZipEntry(MANIFEST_NAME))
-            zip.write(buildManifest(plan, tags, links, appVersion).toByteArray(Charsets.UTF_8))
+            zip.write(buildManifest(plan, tags, links, appVersion, ignoredInPack).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
 
             for (item in plan) {
@@ -176,11 +206,17 @@ object EmojiArchive {
                 done++
                 onProgress(done, total)
             }
-            Report(emojis = written, failed = failed, tags = tags.size, bytes = bytes)
+            Report(
+                emojis = written, failed = failed, tags = tags.size, bytes = bytes,
+                ignored = ignoredInPack.size
+            )
         } catch (e: Exception) {
             // 写到一半出错：包已经不完整，不再往下写，照实返回已经落进包里的数量。
             e.printStackTrace()
-            Report(emojis = written, failed = failed, tags = tags.size, bytes = bytes, error = Error.IO)
+            Report(
+                emojis = written, failed = failed, tags = tags.size, bytes = bytes,
+                ignored = ignoredInPack.size, error = Error.IO
+            )
         } finally {
             // 必须 finish() 才会写下中央目录；出错时也试一把（失败就算了，反正已经报了 IO）。
             runCatching { zip.finish() }
@@ -233,21 +269,35 @@ object EmojiArchive {
         val entries = ArrayList<Entry>(array.length())
         for (i in 0 until array.length()) entries.add(entryOf(array.optJSONObject(i)))
 
+        // 忽略名单（v0.2.012）：老包没有这个键 —— 空名单，什么都不用恢复
+        val ignoredArray = root.optJSONArray("ignore")
+        val ignoredRecords = ArrayList<String>(ignoredArray?.length() ?: 0)
+        if (ignoredArray != null) {
+            for (i in 0 until ignoredArray.length()) {
+                val record = ignoredArray.optString(i).trim()
+                if (record.isNotEmpty() && record !in ignoredRecords) ignoredRecords.add(record)
+            }
+        }
+
         val total = entries.size
 
         // MERGE 的去重键：名字（忽略大小写）+ 体积。体积为 0 说明包里没记，
         // 这时只靠名字判断太容易误伤（两张不同的图同名很常见），宁可不判 ——
         // 多留一份总比把用户真有的那张丢掉强。
-        val taken: Set<String> = if (mode == Mode.MERGE) {
-            existing.mapTo(HashSet(existing.size)) { dedupeKey(it.name, it.fileSize) }
+        // 值是库里那张的 id：包里被顶掉的那些要靠它把忽略名单落到库里已有的那张上。
+        val taken: Map<String, Long> = if (mode == Mode.MERGE) {
+            existing.associateTo(HashMap(existing.size)) { dedupeKey(it.name, it.fileSize) to it.id }
         } else {
-            emptySet()
+            emptyMap()
         }
 
         val dir = ImageUtil.getEmojiDir(context)
         val byEntryName = HashMap<String, Entry>(entries.size * 2)
         val outEmojis = ArrayList<EmojiEntity>(entries.size)
         val outTags = ArrayList<List<String>>(entries.size)
+        // 与 outEmojis 同序同长：这张在包里的 id，调用方靠它把忽略名单的 old id 映射成新 id
+        val outOldIds = ArrayList<Long>(entries.size)
+        val takenOldIds = HashMap<Long, Long>()
         var done = 0
         var skipped = 0
         var failed = 0
@@ -256,8 +306,12 @@ object EmojiArchive {
         // 包里有、库里也有一模一样的：不抽图、不入库，只记一笔。
         // 进度照走，否则用户看着进度条停在半路会以为卡死了。
         for (item in entries) {
-            if (mode == Mode.MERGE && item.size > 0 && dedupeKey(item.name, item.size) in taken) {
+            val key = if (mode == Mode.MERGE && item.size > 0) dedupeKey(item.name, item.size) else null
+            if (key != null && taken.containsKey(key)) {
                 item.handled = true
+                // 这一张没入库，但它在包里的 id 依然指向库里那张一模一样的：忽略名单跟着搬过去
+                val fresh = taken[key]
+                if (item.id > 0L && fresh != null && fresh > 0L) takenOldIds[item.id] = fresh
                 skipped++
                 done++
                 onProgress(done, total)
@@ -328,6 +382,7 @@ object EmojiArchive {
                                     height = height
                                 )
                             )
+                            outOldIds.add(item.id)
                             outTags.add(item.tags)
                         } catch (e: Exception) {
                             // 半成品文件绝不能留在库里：列表里会多出一张打不开的空图。
@@ -360,7 +415,10 @@ object EmojiArchive {
         return Imported(
             emojis = outEmojis,
             tagsOf = outTags,
-            report = Report(emojis = outEmojis.size, skipped = skipped, failed = failed, bytes = bytes)
+            report = Report(emojis = outEmojis.size, skipped = skipped, failed = failed, bytes = bytes),
+            oldIds = outOldIds,
+            takenOldIds = takenOldIds,
+            ignored = ignoredRecords
         )
     }
 
@@ -371,7 +429,8 @@ object EmojiArchive {
         plan: List<Plan>,
         tags: List<TagEntity>,
         links: List<EmojiTagCrossRef>,
-        appVersion: String
+        appVersion: String,
+        ignored: List<String>
     ): String {
         // 每张表情自带一行标签名：这样清单是自解释的，导入端不用再去关联两张表。
         val nameOfTag = HashMap<Long, String>(tags.size * 2)
@@ -394,10 +453,17 @@ object EmojiArchive {
         }
         root.put("tags", tagArray)
 
+        // 忽略名单（v0.2.012）：不升 version —— 旧版读包时多出来的键会被忽略，新包在旧版上照样导入
+        val ignoreArray = JSONArray()
+        for (record in ignored) ignoreArray.put(record)
+        root.put("ignore", ignoreArray)
+
         val emojiArray = JSONArray()
         for (item in plan) {
             val emoji = item.emoji
             val one = JSONObject()
+            // 包里的 id（v0.2.012）：只为导入时给忽略名单做 old → new 映射，落库照样重新分配
+            one.put("id", emoji.id)
             one.put("name", emoji.name)
             one.put("file", item.entryName)
             one.put("fileType", emoji.fileType)
@@ -474,7 +540,7 @@ object EmojiArchive {
 
     /** 清单里的一条记录。缺字段一律走默认值：宁可少一点信息，也不要因为一个字段就整包拒收。 */
     private fun entryOf(one: JSONObject?): Entry {
-        if (one == null) return Entry("", "", "image", "local", false, 0, 0L, 0L, 0L, 0, 0, emptyList())
+        if (one == null) return Entry(0L, "", "", "image", "local", false, 0, 0L, 0L, 0L, 0, 0, emptyList())
         val file = one.optString("file")
         val fileType = one.optString("fileType").trim().lowercase(Locale.US)
             .ifEmpty { if (file.endsWith(".gif", ignoreCase = true)) "gif" else "image" }
@@ -487,6 +553,7 @@ object EmojiArchive {
             }
         }
         return Entry(
+            id = one.optLong("id", 0L),
             name = one.optString("name"),
             file = file,
             fileType = fileType,
@@ -512,8 +579,9 @@ object EmojiArchive {
     /** 导出计划里的一条：记录 + 它的文件 + 算好的条目名（条目名先定下来，清单才能先写）。 */
     private class Plan(val emoji: EmojiEntity, val file: File, val entryName: String)
 
-    /** 清单里登记的一张表情（还没落盘）。 */
+    /** 清单里登记的一张表情（还没落盘）。[id] 是它在导出端库里的 id（v0.2.012 起才写，老包一律 0）。 */
     private class Entry(
+        val id: Long,
         val name: String,
         val file: String,
         val fileType: String,

@@ -201,6 +201,26 @@ class EmojiDaoTest {
         assertEquals(0, find(EmojiFilter(favoritesOnly = true, expr = EmojiFilter.parse("blue"))).size)
     }
 
+    /** 「最近」这一档：只放用过的图，且能跟收藏叠加（用户 m10764）。 */
+    @Test
+    fun recentOnlyKeepsUsedEmojisOnly() = runTest {
+        dao.insert(emoji("用过的", lastUsedTime = 200L, createTime = 1L))
+        dao.insert(emoji("没用过", createTime = 2L))
+        dao.insert(emoji("用过的收藏", isFavorite = true, lastUsedTime = 100L, createTime = 3L))
+
+        // SQL 这层仍按 createTime 倒序，真正的「最近在前」由 EmojiOrder.recentFirst 在 ViewModel 里排
+        assertEquals(
+            listOf("用过的收藏", "用过的"),
+            find(EmojiFilter(recentOnly = true)).map { it.name }
+        )
+        assertEquals(
+            listOf("用过的收藏"),
+            find(EmojiFilter(recentOnly = true, favoritesOnly = true)).map { it.name }
+        )
+        // 关掉这一档，没用过的也要回来
+        assertEquals(3, find(EmojiFilter()).size)
+    }
+
     @Test
     fun deleteByIdsRemovesOnlyListedRows() = runTest {
         val a = dao.insert(emoji("a"))

@@ -58,6 +58,10 @@ class StorageActivity : AppCompatActivity() {
         bindMenuRow(findViewById(R.id.rowSearch), R.string.storage_tool_search_title, R.string.storage_tool_search_sub) {
             startActivity(Intent(this, SearchActivity::class.java))
         }
+        // 长时间不使用的表情（v0.2.013，用户 m11668 第 5 条）：挑出来单独导出备份或删掉
+        bindMenuRow(findViewById(R.id.rowStale), R.string.storage_tool_stale_title, R.string.storage_tool_stale_sub) {
+            startActivity(Intent(this, StaleEmojiActivity::class.java))
+        }
         cacheRow = findViewById(R.id.rowClearCache)
         bindMenuRow(cacheRow, R.string.storage_clear_cache_title, R.string.storage_clear_cache_sub) {
             askClearCache()

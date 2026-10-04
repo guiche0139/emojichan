@@ -23,6 +23,8 @@
     <color name="text_primary">#1B1D2A</color>
     <color name="text_secondary">#6B7080</color>
     <color name="divider">#E7E9F0</color>
+    <!-- 列表滑动条的把手：压在浅色留白上，半透明深墨；深色模式换成半透明浅白 -->
+    <color name="scrollbar_thumb">#661B1D2A</color>
     <!-- 缩略图角落上的小标签底色（动图 / 文件不在了），要压在图片上所以用半透明黑 -->
     <color name="scrim_soft">#99000000</color>
 

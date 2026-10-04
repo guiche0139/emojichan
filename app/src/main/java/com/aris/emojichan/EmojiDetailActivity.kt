@@ -3,6 +3,8 @@ package com.aris.emojichan
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -29,6 +31,7 @@ import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,19 +39,29 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
  * 表情详情页。
  *
- * 设计要点：Intent 只携带 [EXTRA_EMOJI_ID]，页面数据一律来自数据库 Flow，
- * 不在页面间搬运实体。写操作只更新目标列（改名 / 收藏），不会覆盖
- * tags、source、usageCount、lastUsedTime 等字段。
+ * 设计要点：Intent 只携带 [EXTRA_EMOJI_ID]（外加主页那一屏的 id 顺序 [EXTRA_SIBLINGS]），
+ * 页面数据一律来自数据库 Flow，不在页面间搬运实体。写操作只更新目标列（改名 / 收藏），
+ * 不会覆盖 tags、source、usageCount、lastUsedTime 等字段。
+ *
+ * v0.2.013（用户 m11668 第 1 条）起：带着主页那一屏的顺序进来时，左右划看上一张 / 下一张，
+ * 顶上显示 (第几张 / 共几张)。范围就是那一屏 —— 也就是 tag 筛选之后的结果。
  */
 class EmojiDetailActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_EMOJI_ID = "emoji_id"
+
+        /** 主页格子上当前这一屏的 id 顺序（tag 筛选之后的那些）；不带就只是单张，划不动。 */
+        const val EXTRA_SIBLINGS = "siblings"
+
+        /** 横着划够这么多 dp 才算要换图（划得太少就当没想换）。 */
+        private const val SWIPE_MIN_DP = 56f
     }
 
     private lateinit var viewModel: EmojiViewModel
@@ -78,7 +91,15 @@ class EmojiDetailActivity : AppCompatActivity() {
     /** 当前表情的数据库真值；由 [observeEmoji] 持续刷新，写操作一律以它为准。 */
     private var currentEmoji: EmojiEntity? = null
 
-    private val emojiId: Long by lazy { intent.getLongExtra(EXTRA_EMOJI_ID, 0L) }
+    /** 当前显示的那张：左右划会换，所以不是 val（用户 m11668 第 1 条）。 */
+    private var currentId = 0L
+
+    /** 主页那一屏的 id 顺序；从检索页或别处进来时是空的，这时不划也不显示 (a/s)。 */
+    private var currentSiblings: LongArray = LongArray(0)
+
+    /** 换图之后要重新订阅的两条流（这张表情、它的标签）。 */
+    private var emojiJob: Job? = null
+    private var tagsJob: Job? = null
 
     /** 单张导出：交给系统的「保存到…」，只把文件复制出去，库里这张不动。 */
     private val exportPicker = registerForActivityResult(
@@ -98,11 +119,14 @@ class EmojiDetailActivity : AppCompatActivity() {
         observeMessage()
         setupButtons()
 
-        if (emojiId == 0L) {
+        currentId = intent.getLongExtra(EXTRA_EMOJI_ID, 0L)
+        currentSiblings = intent.getLongArrayExtra(EXTRA_SIBLINGS) ?: LongArray(0)
+        if (currentId == 0L) {
             Toast.makeText(this, getString(R.string.detail_not_found), Toast.LENGTH_SHORT).show()
             finish()
             return
         }
+        renderPosition()
         observeEmoji()
         observeTags()
     }
@@ -138,10 +162,72 @@ class EmojiDetailActivity : AppCompatActivity() {
         toolbar.setNavigationOnClickListener { finish() }
     }
 
+    /**
+     * 左右划换上一张 / 下一张（用户 m11668 第 1 条）。
+     *
+     * 手势挂在 [dispatchTouchEvent] 上、不占任何子 View 的触摸：图片区、标签 chip、
+     * 按钮的点击都照旧。只有「横着划够远、且明显比竖着多」才算换图，免得点标签时误触。
+     */
+    private val swipeDetector by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                val from = e1 ?: return false
+                val dx = e2.x - from.x
+                val dy = e2.y - from.y
+                if (abs(dx) < dp(SWIPE_MIN_DP) || abs(dx) < abs(dy) * 1.5f) return false
+                // 手指往左划 = 看下一张（右手翻页的方向）
+                return showSibling(if (dx < 0) 1 else -1)
+            }
+        })
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        swipeDetector.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /**
+     * 换成这一屏里的前 / 后第 [step] 张。到了头就给一句提示，让手势不至于像没生效。
+     * 返回是否真的换了。
+     */
+    private fun showSibling(step: Int): Boolean {
+        if (currentSiblings.size < 2) return false
+        val at = currentSiblings.indexOfFirst { it == currentId }
+        if (at < 0) return false
+        val next = at + step
+        if (next !in currentSiblings.indices) {
+            Toast.makeText(
+                this,
+                if (step > 0) R.string.detail_last_toast else R.string.detail_first_toast,
+                Toast.LENGTH_SHORT
+            ).show()
+            return false
+        }
+        currentId = currentSiblings[next]
+        renderPosition()
+        observeEmoji()
+        observeTags()
+        return true
+    }
+
+    /** 顶上的 (a/s)：a = 这一张在主页那一屏里的第几个，s = 那一屏一共几张。 */
+    private fun renderPosition() {
+        val at = currentSiblings.indexOfFirst { it == currentId }
+        toolbar.subtitle = if (currentSiblings.size < 2 || at < 0) {
+            null
+        } else {
+            getString(R.string.detail_position, at + 1, currentSiblings.size)
+        }
+    }
+
     /** 订阅数据库：记录被删除时自动关闭页面；写入成功后 UI 自动回灌真值。 */
     private fun observeEmoji() {
-        lifecycleScope.launch {
-            viewModel.observeEmoji(emojiId).collectLatest { emoji ->
+        // 划到下一张要换 id，所以订阅本身也重来一回：先撤掉上一份，再订新的
+        emojiJob?.cancel()
+        emojiJob = lifecycleScope.launch {
+            viewModel.observeEmoji(currentId).collectLatest { emoji ->
                 if (emoji == null) {
                     currentEmoji = null
                     finish()
@@ -366,8 +452,9 @@ class EmojiDetailActivity : AppCompatActivity() {
 
     /** 标签行订阅：加/摘都由数据库 Flow 推回来，页面不自己改状态。 */
     private fun observeTags() {
-        lifecycleScope.launch {
-            viewModel.observeTagsOf(emojiId).collectLatest { tags -> renderTags(tags) }
+        tagsJob?.cancel()
+        tagsJob = lifecycleScope.launch {
+            viewModel.observeTagsOf(currentId).collectLatest { tags -> renderTags(tags) }
         }
     }
 
@@ -396,7 +483,7 @@ class EmojiDetailActivity : AppCompatActivity() {
             .setTitle(R.string.tag_delete_title)
             .setMessage(getString(R.string.tag_remove_from_emoji, tag.name))
             .setPositiveButton(R.string.dialog_ok) { _, _ ->
-                viewModel.removeTagFromEmoji(emojiId, tag.id)
+                viewModel.removeTagFromEmoji(currentId, tag.id)
             }
             .setNegativeButton(R.string.dialog_cancel, null)
             .show()
@@ -428,7 +515,7 @@ class EmojiDetailActivity : AppCompatActivity() {
             }
             builder
                 .setItems(candidates.map { it.name }.toTypedArray()) { _, which ->
-                    viewModel.addTagToEmoji(emojiId, candidates[which].name)
+                    viewModel.addTagToEmoji(currentId, candidates[which].name)
                 }
                 .setNeutralButton(R.string.organize_add_tag_new) { _, _ -> showNewTagDialog() }
                 .show()
@@ -442,7 +529,7 @@ class EmojiDetailActivity : AppCompatActivity() {
             .setView(input)
             .setPositiveButton(R.string.dialog_ok) { _, _ ->
                 val name = input.text.toString().trim()
-                if (name.isNotEmpty()) viewModel.addTagToEmoji(emojiId, name)
+                if (name.isNotEmpty()) viewModel.addTagToEmoji(currentId, name)
             }
             .setNegativeButton(R.string.dialog_cancel, null)
             .show()

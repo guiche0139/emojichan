@@ -29,6 +29,12 @@ class SimilarFinderTest {
     /** 只亮低位的哈希：两个这样的哈希差几位，就是两个 n 的差。 */
     private fun ones(count: Int): Long = if (count >= 64) -1L else (1L shl count) - 1L
 
+    /** 忽略名单的查表版：每张图 → 不能跟它同组的那些。[SimilarFinder] 现在收的就是它。 */
+    private fun bannedOf(keys: Set<String>): (Long) -> Set<Long> {
+        val table = SimilarIgnore.bannedOf(keys)
+        return { id -> table[id] ?: emptySet() }
+    }
+
     @Test
     fun itemsWithinThresholdShareAGroup() = runTest {
         val groups = SimilarFinder.find(
@@ -241,13 +247,13 @@ class SimilarFinderTest {
     /** 用户点过「忽略这组」的那两张，之后不该再同组（v0.2.006，用户 m10497）。 */
     @Test
     fun ignoredPairIsNotGroupedTogether() = runTest {
-        val keys = setOf(SimilarIgnore.key(1, 2))
+        val keys = setOf("1:2")
 
         val groups = SimilarFinder.find(
             items = listOf(item(1), item(2)),
             threshold = SimilarFinder.DEFAULT,
             hashOf = { if (it.id == 1L) ones(0) else ones(3) },
-            ignored = { a, b -> SimilarIgnore.contains(keys, a, b) }
+            banned = bannedOf(keys)
         )
 
         assertTrue("忽略过的两张不该还在一起", groups.isEmpty())
@@ -263,16 +269,14 @@ class SimilarFinderTest {
     fun ignoredPairDoesNotComeBackThroughAThirdOne() {
         val items = listOf(item(1), item(2), item(3))
         val hashes = mapOf(1L to ones(0), 2L to ones(3), 3L to ones(6))
-        val keys = setOf(SimilarIgnore.key(1, 3))
+        val keys = setOf("1:3")
 
         assertEquals(
             listOf(1L, 2L, 3L),
             SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT).single().members.map { it.id }
         )
 
-        val after = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT) { a, b ->
-            SimilarIgnore.contains(keys, a, b)
-        }
+        val after = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT, bannedOf(keys))
 
         assertEquals(listOf(1L, 2L), after.single().members.map { it.id })
     }
@@ -285,11 +289,10 @@ class SimilarFinderTest {
             1L to ones(0), 2L to ones(2), 3L to ones(4),  // 本来是一组
             4L to ones(40), 5L to ones(43)                // 另一组，差 3 位
         )
-        val keys = setOf(SimilarIgnore.key(2, 3))
+        val keys = setOf("2:3")
 
-        val groups = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT) { a, b ->
-            SimilarIgnore.contains(keys, a, b)
-        }.sortedBy { it.representative.id }
+        val groups = SimilarFinder.group(items, hashes, SimilarFinder.DEFAULT, bannedOf(keys))
+            .sortedBy { it.representative.id }
 
         // 3 被挡在 1、2 那组之外，自己一张凑不成组；2 并没有被踢出去
         assertEquals(2, groups.size)

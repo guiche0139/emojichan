@@ -97,6 +97,8 @@
         <activity android:name=".storage.CompressActivity" />
         <activity android:name=".storage.CompressPreviewActivity" />
         <activity android:name=".storage.SearchActivity" />
+        <activity android:name=".storage.SimilarIgnoreActivity" />
+        <activity android:name=".storage.StaleEmojiActivity" />
         <activity
             android:name=".VersionActivity"
             android:label="@string/settings_version_title" />
@@ -143,7 +145,7 @@
         <service
             android:name=".sender.BallTileService"
             android:exported="true"
-            android:icon="@mipmap/ic_launcher"
+            android:icon="@drawable/ic_tile_ball"
             android:label="@string/tile_label"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>

@@ -30,6 +30,12 @@ import java.io.File
  *  删不掉。所以现在的做法是：把候选槽位从前往后试一遍（先试记住的那条），哪条写得进去就用哪条；
  *  全都写不进去就自己 insert 一条新的（insert 出来的行一定归我们），并把 uri 记进
  *  SharedPreferences，下次优先用它。旧的那条留着不动 —— 写不进也删不掉，用户想清自己在相册里删。
+ *
+ * v0.2.202 起槽位**按扩展名分开记**（用户 m14379：发完动图再发 jpg 会报「所选内容无可发送」）。
+ *  以前只有一条全局槽位：发过 GIF 之后那条记录叫 Emojichan.gif、类型写着 image/gif，再发 jpg 时
+ *  JPEG 字节就被写进了它 —— 而「名字 / 类型」这两个列在已有行上系统未必让改，微信 / QQ 的选图页
+ *  拿到「名字说 gif、内容是 jpeg」的记录就拒绝发送。现在一行只服务一种扩展名，挑候选时也只看
+ *  同类型的行，写完还回读一眼名字 / 类型记进日志。
  */
 object AlbumPublish {
 
@@ -43,9 +49,15 @@ object AlbumPublish {
     private const val LEGACY_DIR = "Pictures/EmojiChan"
     private const val LEGACY_PREFIX = "emojichan_"
 
-    /** 记住自己写得进去的那条槽位（v0.2.001）。目录里可能躺着一条改不动的旧槽位，不能每次都去猜。 */
+    /**
+     * 记住自己写得进去的那条槽位（v0.2.001），**一种扩展名一条**（v0.2.202）。
+     * 键 = [KEY_SLOT_PREFIX] + ".gif" / ".jpg" / ".webp" / ".png"。
+     *
+     * 旧版本只有一个键（"slot_uri"），现在不再读写它：那条旧行照样会被「同类型」的筛选挑出来用，
+     * 只是不再享有优先权。
+     */
     private const val PREFS = "album_publish"
-    private const val KEY_SLOT = "slot_uri"
+    private const val KEY_SLOT_PREFIX = "slot_uri_"
 
     /** 一次最多试几条候选，防止目录里积了一堆旧行时反复空转。 */
     private const val MAX_CANDIDATES = 4
@@ -85,14 +97,15 @@ object AlbumPublish {
             return null
         }
         val actualMime = resolveMime(mime, source.name)
-        val displayName = SLOT_NAME + extensionOf(actualMime)
+        val ext = extensionOf(actualMime)
+        val displayName = SLOT_NAME + ext
         return runCatching {
-            val candidates = candidates(context)
+            val candidates = candidates(context, ext)
             candidates.forEachIndexed { index, slot ->
                 val written = tryWrite(context, slot.uri, source, actualMime, displayName)
                 if (written != null && written > 0L) {
                     slotUri = slot.uri
-                    remember(context, slot.uri)
+                    remember(context, slot.uri, ext)
                     SendLog.d(
                         "相册",
                         (if (index == 0) "复用槽位 " else "用第 " + (index + 1) + " 条候选槽位 ") +
@@ -124,7 +137,7 @@ object AlbumPublish {
                 return@runCatching null
             }
             slotUri = fresh
-            remember(context, fresh)
+            remember(context, fresh, ext)
             SendLog.d("相册", "新槽位已写入：" + written + " 字节，" + actualMime)
             fresh
         }.getOrElse { e ->
@@ -175,7 +188,8 @@ object AlbumPublish {
     fun onStart(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         runCatching {
-            for (slot in candidates(context)) {
+            // 走整个目录（不分类型）：上一次写坏的可能是任何一种槽位。
+            for (slot in slotsInDir(context)) {
                 val stuck = pendingSize(context, slot.uri)
                 if (stuck > 0L) {
                     val rows = update(
@@ -221,35 +235,43 @@ object AlbumPublish {
     // ---------- 下面都是和系统相册数据库打交道的小工具，出错一律只记日志 ----------
 
     /**
-     * 候选槽位，按优先级排：先是我们记住的那条，再是这个目录里所有叫 Emojichan.<后缀> 的行。
+     * 候选槽位，按优先级排：先是我们记住的那条，再是这个目录里其它**同类型**的行（新的在前）。
      * 目录里可能躺着一条改不动的旧槽位，所以不能只取第一条。
+     *
+     * [ext] 带点（".jpg"）。只挑名字后缀对得上的行 —— 跨类型绝对不能碰：往一条叫 Emojichan.gif
+     * 的行里写 JPEG 字节，就是 v0.2.202 之前那次「所选内容无可发送」的来源。
      */
-    private fun candidates(context: Context): List<Slot> {
+    private fun candidates(context: Context, ext: String): List<Slot> {
+        val sameKind = slotsInDir(context).filter { it.name.lowercase().endsWith(ext) }
+        val rememberedUri = remembered(context, ext)
         val out = ArrayList<Slot>()
-        val seen = HashSet<String>()
-        remembered(context)?.let {
-            out += Slot(it, "记住的槽位", null)
-            seen += it.toString()
-        }
-        for (slot in slotsInDir(context)) {
+        sameKind.firstOrNull { it.uri == rememberedUri }?.let { out += it }
+        for (slot in sameKind) {
             if (out.size >= MAX_CANDIDATES) break
-            if (seen.add(slot.uri.toString())) out += slot
+            if (out.any { it.uri == slot.uri }) continue
+            out += slot
         }
-        if (out.isEmpty()) SendLog.d("相册", "目录 " + ALBUM_DIR + " 里还没有槽位，这就要建一条")
+        // 一条同类型的行都没列出来（没有相册读权限 / 查询出错）：还是先试记住的那条，
+        // 它上一轮是写成功过的。
+        if (out.isEmpty() && rememberedUri != null) {
+            out += Slot(rememberedUri, "记住的槽位（目录里没列到）", null)
+        }
+        if (out.isEmpty()) SendLog.d("相册", "目录 " + ALBUM_DIR + " 里还没有 " + ext + " 槽位，这就要建一条")
         return out
     }
 
-    private fun remembered(context: Context): Uri? {
+    /** 这一类型上次写成功的那条槽位（v0.2.202 起按扩展名分开记）。 */
+    private fun remembered(context: Context, ext: String): Uri? {
         val raw = runCatching {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SLOT, null)
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SLOT_PREFIX + ext, null)
         }.getOrNull() ?: return null
         return runCatching { Uri.parse(raw) }.getOrNull()
     }
 
-    private fun remember(context: Context, uri: Uri) {
+    private fun remember(context: Context, uri: Uri, ext: String) {
         runCatching {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_SLOT, uri.toString()).apply()
+                .edit().putString(KEY_SLOT_PREFIX + ext, uri.toString()).apply()
         }
     }
 
@@ -289,21 +311,60 @@ object AlbumPublish {
             return null
         }
         // 时间列：DATE_TAKEN 是毫秒、DATE_ADDED 是秒。改得动才可能在「时间倒序」里回到最前。
+        //
+        // 这里**不再写 DISPLAY_NAME**（v0.2.202）：候选槽位是按扩展名挑的，名字本来就该对得上；
+        // 而给已有的行改名在 MediaStore 上未必生效，一旦「名字说 gif、内容却是 jpeg」，微信 / QQ
+        // 就会报「所选内容无可发送」（用户 m14379）。MIME_TYPE 照写 —— 它是这一条本来就该有的类型。
         val now = System.currentTimeMillis()
         val rows = updateStrict(
             context, uri,
             ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
                 put(MediaStore.Images.Media.MIME_TYPE, mime)
                 put(MediaStore.Images.Media.DATE_TAKEN, now)
                 put(MediaStore.Images.Media.DATE_ADDED, now / 1000L)
                 put(MediaStore.Images.Media.IS_PENDING, 0)
             },
-            "刷新名字/时间列"
+            "刷新时间列"
         )
         SendLog.d("相册", "写完刷新元数据：改到 " + (rows ?: -1) + " 行（DATE_TAKEN=" + now + "）")
         if (rows == null) return null
+        logShape(context, uri, displayName, mime)
         return written
+    }
+
+    /**
+     * 写完回读一眼这行现在长什么样，记进日志（v0.2.202）。
+     *
+     * 相册路线再出「所选内容无可发送」时，先看这一行：名字 / 类型 / 大小 / 是不是还藏着，
+     * 一眼就知道系统最后留下了什么。
+     */
+    private fun logShape(context: Context, uri: Uri, expectedName: String, expectedMime: String) {
+        val shape = runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.MIME_TYPE,
+                    MediaStore.Images.Media.SIZE,
+                    MediaStore.Images.Media.IS_PENDING
+                ),
+                null, null, null
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    "查不到这一行"
+                } else {
+                    val name = if (cursor.isNull(0)) "?" else cursor.getString(0)
+                    val mime = if (cursor.isNull(1)) "?" else cursor.getString(1)
+                    val size = if (cursor.isNull(2)) 0L else cursor.getLong(2)
+                    val pending = if (cursor.isNull(3)) 0L else cursor.getLong(3)
+                    "name=" + name + " mime=" + mime + " size=" + size + " pending=" + pending
+                }
+            } ?: "查不到这一行"
+        }.getOrDefault("读不出来")
+        SendLog.d("相册", "写完回读：" + shape + "（期望 " + expectedName + " / " + expectedMime + "）")
+        if (!shape.contains("name=" + expectedName + " ")) {
+            SendLog.w("相册", "这行的名字不是我们要的（期望 " + expectedName + "）：下回别再往它里面写别的类型")
+        }
     }
 
     /**
@@ -332,7 +393,12 @@ object AlbumPublish {
         )
     }
 
-    /** 目录里所有叫 Emojichan.<后缀> 的行（新的在前）；出错返回空表。 */
+    /**
+     * 目录里所有以 Emojichan 开头的行（新的在前）；出错返回空表。
+     *
+     * 用前缀而不是「Emojichan.」是因为系统给重名文件会加后缀（「Emojichan (1).jpg」），
+     * 那种行也是我们的槽位。类型由调用方按扩展名过滤（v0.2.202）。
+     */
     private fun slotsInDir(context: Context): List<Slot> = runCatching {
         // owner_package_name 是 API 29 才有的列，这里写字面量：只用来写日志，读不到也没关系。
         val projection = arrayListOf(
@@ -346,7 +412,7 @@ object AlbumPublish {
             projection.toTypedArray(),
             MediaStore.Images.Media.RELATIVE_PATH + " = ? AND " +
                 MediaStore.Images.Media.DISPLAY_NAME + " LIKE ?",
-            arrayOf(ALBUM_DIR + "/", SLOT_NAME + ".%"),
+            arrayOf(ALBUM_DIR + "/", SLOT_NAME + "%"),
             MediaStore.Images.Media._ID + " DESC"
         )?.use { cursor ->
             val idCol = cursor.getColumnIndex(MediaStore.Images.Media._ID)

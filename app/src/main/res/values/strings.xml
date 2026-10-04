@@ -133,7 +133,6 @@
     <string name="overlay_chip_all">全部</string>
     <string name="overlay_chip_favorites">收藏</string>
     <string name="overlay_panel_tag_label">标签</string>
-    <string name="overlay_tag_none">不限</string>
     <string name="overlay_empty">暂无表情，先在应用里导入</string>
     <string name="overlay_empty_tag">这个标签下没有表情</string>
     <string name="overlay_empty_tags">这些标签下没有表情</string>
@@ -282,7 +281,7 @@
     <string name="settings_log_sub">记录每次发送的方式、结果与剪贴板信息</string>
 
     <string name="settings_version_title">版本</string>
-    <string name="settings_version_sub">v%1$s · 覆盖安装新版本，表情数据保留</string>
+    <string name="settings_version_sub">v%1$s</string>
     <!-- 版本页下面的 GitHub 入口：应用不联网，这里只是把人送到发布页，下载由浏览器完成。 -->
     <string name="settings_github_title">GitHub</string>
     <string name="settings_github_sub">去发布页看看有没有新版本</string>

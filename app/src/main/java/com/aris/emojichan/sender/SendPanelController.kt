@@ -19,6 +19,7 @@ import com.aris.emojichan.data.EmojiFilter
 import com.aris.emojichan.data.EmojiRepository
 import com.aris.emojichan.data.TagEntity
 import com.aris.emojichan.data.TagMode
+import com.aris.emojichan.data.TagOrder
 import com.bumptech.glide.Glide
 import com.google.android.material.color.MaterialColors
 import com.bumptech.glide.load.resource.bitmap.CenterCrop
@@ -42,8 +43,13 @@ import java.io.File
  *
  * 标签行跟主界面筛选条是同一套读法（v0.2.007，用户 m10764）：可以同时选多个，每个标签各记
  * 一份合并方式，chip 上写着它（& 交 / | 并 / ! 非）。点没选中的＝选上（默认交），再点已选中的＝
- * 换下一种，「不限」＝一次清空。悬浮球是「赶紧挑一张发出去」的场景，所以没再摆一颗 ×：多按
+ * 换下一种、第四下取消。悬浮球是「赶紧挑一张发出去」的场景，所以没再摆一颗 ×：多按
  * 一下就回到没选，也少一个点不中的小目标。
+ *
+ * v0.2.201（用户 m14344）改了两处：行首那颗「不限」删掉 —— 一个标签都不选本来就是「不限」，
+ * 那颗 chip 白占一个位置；顺序交给 [TagOrder.forPanel]，跟主界面标签下拉同一条规则（「图片」
+ * 「动图」永远在最前，其余按挂着的张数从多到少）。清空挪到长按上（见 [clearSelectedTags]）：
+ * 选了三个标签时才需要它，平时多按的那几下不算什么。
  */
 class SendPanelController(
     private val host: Context,
@@ -86,7 +92,7 @@ class SendPanelController(
     private var current: String = ""
     private var loadJob: Job? = null
 
-    /** 标签行上的 chip；id = null 是「不限」。 */
+    /** 标签行上的 chip。 */
     private var tagChips: List<TagChip> = emptyList()
 
     /**
@@ -96,7 +102,7 @@ class SendPanelController(
      */
     private val selectedTags = LinkedHashMap<Long, TagMode>()
 
-    private data class TagChip(val id: Long?, val name: String, val view: TextView)
+    private data class TagChip(val id: Long, val name: String, val view: TextView)
 
     fun bind() {
         root.findViewById<View>(R.id.sendPanelMask).setOnClickListener { onClose() }
@@ -108,7 +114,7 @@ class SendPanelController(
         refreshTarget()
 
         scope.launch {
-            val tags = repository.getTags()
+            val tags = orderedTags()
             val hasRecent = repository.getRecentEmojis(RECENT_LIMIT).first().isNotEmpty()
             buildChips()
             buildTagChips(tags)
@@ -182,10 +188,20 @@ class SendPanelController(
     }
 
     /**
-     * 标签行。第一个永远是「不限」（点它＝把选中的标签一次清空），后面每个标签一个 chip：
-     * 可以同时选多个，每个各记一份合并方式（用户 m10764）。
+     * 标签行的顺序：跟主界面标签下拉共用 [TagOrder.forPanel] —— 「图片」「动图」永远在最前，
+     * 其余按挂着的表情张数从多到少（用户 m14344）。张数要读一次 `observeTagCounts`，
+     * 所以这里是 suspend，只在 [bind] 里调一次；之后增删标签要重新开面板才看得出来。
+     */
+    private suspend fun orderedTags(): List<TagEntity> {
+        val counts = repository.observeTagCounts().first().associate { it.tagId to it.count }
+        return TagOrder.forPanel(repository.getTags(), counts)
+    }
+
+    /**
+     * 标签行。每个标签一颗 chip：可以同时选多个，每个各记一份合并方式（用户 m10764）。
+     * 行首没有「不限」—— 一颗都没选就是这个意思（用户 m14344）；长按任意一颗＝一次清空。
      *
-     * 一个标签都没有时整行藏起来，否则面板上会多出一行只有「不限」的空壳。
+     * 一个标签都没有时整行藏起来，否则面板上会多出一行只有「标签」两个字和空白的空壳。
      */
     private fun buildTagChips(tags: List<TagEntity>) {
         tagRow.visibility = if (tags.isEmpty()) View.GONE else View.VISIBLE
@@ -196,12 +212,12 @@ class SendPanelController(
             return
         }
 
-        val entries: List<Pair<Long?, String>> =
-            listOf(null to host.getString(R.string.overlay_tag_none)) + tags.map { it.id to it.name }
-        tagChips = entries.map { (id, label) ->
-            val chip = createChip(label) { onTagChip(id) }
+        tagChips = tags.map { tag ->
+            val chip = createChip(tag.name) { onTagChip(tag.id) }
+            // 长按＝清空：原来干这活的是行首那颗「不限」（用户 m14344 把它删了）
+            chip.setOnLongClickListener { clearSelectedTags(); true }
             tagChipContainer.addView(chip, chipParams())
-            TagChip(id, label, chip)
+            TagChip(tag.id, tag.name, chip)
         }
         refreshTagChips()
     }
@@ -250,30 +266,38 @@ class SendPanelController(
     }
 
     /**
-     * 点标签行上的 chip（null = 「不限」）。
+     * 点标签行上的 chip。
      *
-     * 没选中的选上（默认交），已经选上的换下一种：交 → 并 → 非 → 取消；「不限」把选中的标签
-     * 一次清空（用户 m10764，跟主界面筛选条上那套循环同一个读法）。
+     * 没选中的选上（默认交），已经选上的换下一种：交 → 并 → 非 → 取消（用户 m10764，
+     * 跟主界面筛选条上那套循环同一个读法）。
      *
      * 标签和上排那三颗是两个独立维度，可以叠加。唯一的例外是「最近」：它本来就不是筛选，
      * 叠加标签后语义会变成「所有挂了这个标签的图」，与 chip 上的字对不上，
      * 所以一旦选了标签就自动切到「全部」。
      */
-    private fun onTagChip(tagId: Long?) {
-        if (tagId == null) {
-            if (selectedTags.isNotEmpty()) selectedTags.clear()
-        } else {
-            when (selectedTags[tagId]) {
-                null -> selectedTags[tagId] = TagMode.ALL
-                TagMode.ALL -> selectedTags[tagId] = TagMode.ANY
-                TagMode.ANY -> selectedTags[tagId] = TagMode.EXCLUDE
-                TagMode.EXCLUDE -> selectedTags.remove(tagId)
-            }
+    private fun onTagChip(tagId: Long) {
+        when (selectedTags[tagId]) {
+            null -> selectedTags[tagId] = TagMode.ALL
+            TagMode.ALL -> selectedTags[tagId] = TagMode.ANY
+            TagMode.ANY -> selectedTags[tagId] = TagMode.EXCLUDE
+            TagMode.EXCLUDE -> selectedTags.remove(tagId)
         }
         if (selectedTags.isNotEmpty() && current == host.getString(R.string.overlay_chip_recent)) {
             current = host.getString(R.string.overlay_chip_all)
             refreshChips()
         }
+        refreshTagChips()
+        select(current)
+    }
+
+    /**
+     * 长按标签 chip：已选的标签一次清空，回到「不限」（用户 m14344 删掉行首那颗 chip 之后，
+     * 把这个动作挪到了这里）。一颗都没选时什么也不做 —— 否则白刷一遍列表，还得把「最近」
+     * 重新查一次。
+     */
+    private fun clearSelectedTags() {
+        if (selectedTags.isEmpty()) return
+        selectedTags.clear()
         refreshTagChips()
         select(current)
     }
@@ -296,14 +320,14 @@ class SendPanelController(
     }
 
     /**
-     * 标签 chip 的样子：选中的写成「& 猫」（符号是它自己的合并方式），没选的只写名字；
-     * 「不限」选中 = 一个标签都没选。
+     * 标签 chip 的样子：选中的写成「& 猫」（符号是它自己的合并方式），没选的只写名字。
+     * 一颗都没选时整行都是未选中态 —— 那就是「不限」，没有单独的 chip 去点亮它。
      */
     private fun refreshTagChips() {
         tagChips.forEach { chip ->
-            val mode = chip.id?.let { selectedTags[it] }
+            val mode = selectedTags[chip.id]
             chip.view.text = if (mode != null) matchSymbol(mode) + " " + chip.name else chip.name
-            paintChip(chip.view, if (chip.id == null) selectedTags.isEmpty() else mode != null)
+            paintChip(chip.view, mode != null)
         }
     }
 

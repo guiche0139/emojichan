@@ -73,6 +73,14 @@ class FloatingBallService : Service() {
          */
         private const val PANEL_TITLE_DELAY_MS = 60L
 
+        /**
+         * 树几乎是空的时候（节点数 ≤ 这个值）标题多半只是还没长出来，隔一拍重读；
+         * 最多重读 [PANEL_TITLE_RETRY_MAX] 次 —— 再多用户就开始盯着「（没认出来）」发呆了。
+         */
+        private const val PANEL_TITLE_RETRY_DELAY_MS = 500L
+        private const val PANEL_TITLE_RETRY_MAX = 2
+        private const val PANEL_TITLE_RETRY_MIN_NODES = 3
+
         /** 双击悬浮球的最小间隔：两下挨太近就是一次开、一次关（看起来像闪了一下）。 */
         private const val TOGGLE_MIN_GAP_MS = 400L
 
@@ -104,7 +112,11 @@ class FloatingBallService : Service() {
          */
         fun refreshScope() {
             val service = instance ?: return
-            service.handler.post { service.syncBallVisibility() }
+            service.handler.post {
+                // 设置可能刚改过，缓存作废再重算（见 cachedBallPackages）。
+                service.ballPackagesCache = null
+                service.syncBallVisibility()
+            }
         }
 
         fun start(context: Context, snapToEdge: Boolean = false) {
@@ -246,7 +258,7 @@ class FloatingBallService : Service() {
         if (added.isFailure) {
             SendLog.e(
                 "球",
-                "悬浮球挂不上屏幕（多半是悬浮窗权限被撤了）：" +
+                "悬浮球挂不上屏幕（悬浮窗权限可能被撤）：" +
                     (added.exceptionOrNull()?.javaClass?.simpleName ?: "未知错误")
             )
             // 权限已经没了：把「球开着」这个愿望一起收掉，不然下次进主界面还会再试一遍、再失败一遍。
@@ -441,7 +453,7 @@ class FloatingBallService : Service() {
         if (added.isFailure) {
             SendLog.e(
                 "面板",
-                "面板挂不上屏幕（悬浮窗权限可能已经被撤了）：" +
+                "面板挂不上屏幕（悬浮窗权限可能被撤）：" +
                     (added.exceptionOrNull()?.javaClass?.simpleName ?: "未知错误")
             )
             controller.release()
@@ -455,15 +467,30 @@ class FloatingBallService : Service() {
         // 这一读是同步读微信的节点树（几十到几百毫秒），以前放在挂窗口**之前**：球已经藏了、
         // 面板还没上屏，用户看到的就是「点了球半天没反应」。改成先挂窗口、隔一帧再读
         // （安全审查 emc-2-032）。读的时候按包名过滤窗口，面板自己这层不算「应用窗口」。
-        handler.postDelayed({
-            if (panelView !== view) return@postDelayed
-            val title = AutoSendService.readChatTitle()
-            controller.setTarget(title)
-            SendLog.d(
-                "面板",
-                "面板打开，所在应用 = " + (panelAppPackage ?: "未知") + "，顶部目标 = " + (title ?: "（没认出来）")
-            )
-        }, PANEL_TITLE_DELAY_MS)
+        handler.postDelayed({ readPanelTitle(view, PANEL_TITLE_RETRY_MAX) }, PANEL_TITLE_DELAY_MS)
+    }
+
+    /**
+     * 面板顶部那行「将发给：谁」。
+     *
+     * 应用刚被拉起 / 刚切过去的那一下，无障碍树里可能只有窗口根自己一个节点（实测微信小窗
+     * 启动时就是这样），这一读必然读不到。但树是**几乎空的**就说明它多半只是还没长出来，
+     * 隔一拍再读一次就好 —— 用户看到的是面板先出来、名字晚半秒补上。
+     */
+    private fun readPanelTitle(view: View, retriesLeft: Int) {
+        if (panelView !== view) return
+        val title = AutoSendService.readChatTitle()
+        val nodes = AutoSendService.lastReadNodeCount()
+        if (title == null && retriesLeft > 0 && nodes <= PANEL_TITLE_RETRY_MIN_NODES) {
+            SendLog.d("面板", "树几乎是空的 nodes=" + nodes + "，下一拍再读标题")
+            handler.postDelayed({ readPanelTitle(view, retriesLeft - 1) }, PANEL_TITLE_RETRY_DELAY_MS)
+            return
+        }
+        panelController?.setTarget(title)
+        SendLog.d(
+            "面板",
+            "面板打开 pkg=" + (panelAppPackage ?: "未知") + " 顶部目标=" + (title ?: "没认出来")
+        )
     }
 
     private fun hidePanel() {
@@ -489,21 +516,34 @@ class FloatingBallService : Service() {
         // 「跟随系统」时系统的深浅色变了也要跟上；前台切应用时顺路查一次，几乎零开销。
         if (com.aris.emojichan.UiPrefs.isNight(this) != ballNight) refreshBallAppearance()
         if (panelView != null) return
-        val ballPackages = SenderPrefs.ballPackages(this)
+        val ballPackages = cachedBallPackages()
         val foreground = AutoSendService.foregroundApp
         val visible = !AutoSendService.isConnected || BallScope.shouldShow(ballPackages, foreground)
         val next = if (visible) View.VISIBLE else View.GONE
         if (view.visibility != next) {
             SendLog.d(
                 "球",
-                (if (visible) "显示" else "隐藏") + "：无障碍服务" +
-                    (if (AutoSendService.isConnected) "已连接" else "未连接") +
-                    "，前台=" + (foreground ?: "无") +
-                    "，勾选=" + (if (ballPackages.isEmpty()) "所有应用" else ballPackages.size.toString() + " 个应用")
+                (if (visible) "显示" else "隐藏") + " a11y=" +
+                    (if (AutoSendService.isConnected) "on" else "off") +
+                    " fg=" + (foreground ?: "无") +
+                    " watched=" + (if (ballPackages.isEmpty()) "all" else ballPackages.size.toString())
             )
         }
         view.visibility = next
     }
+
+    /**
+     * 用户勾的「球出现在哪些应用里」。
+     *
+     * 这份设置只在设置页里改，而 [syncBallVisibility] 是**每一次前台变化**都要跑一遍的
+     * （切一次应用一次），以前每次都去 SharedPreferences 里把那个 Set 反序列化出来，
+     * 还在主线程上（用户 m14582 批准的后台精简第 5 条）。现在缓存一份，
+     * 设置改动走 [refreshScope] → 清缓存 → 重算。
+     */
+    private var ballPackagesCache: Set<String>? = null
+
+    private fun cachedBallPackages(): Set<String> =
+        ballPackagesCache ?: SenderPrefs.ballPackages(this).also { ballPackagesCache = it }
 
     private fun onEmojiPicked(emoji: EmojiEntity) {
         // 使用记录只是统计，失败不影响这次发送。
@@ -522,8 +562,8 @@ class FloatingBallService : Service() {
         val appPackage = AutoSendService.foregroundApp ?: panelAppPackage
         SendLog.d(
             "发送",
-            "选中表情 id=" + emoji.id + "，发给 " + (appPackage ?: "（没认出前台应用）") +
-                "，目标 = " + SendLog.mask(title)
+            "选中表情 id=" + emoji.id + " 发给 " + (appPackage ?: "没认出前台应用") +
+                " 目标=" + SendLog.mask(title)
         )
 
         // 四条路：
@@ -540,16 +580,15 @@ class FloatingBallService : Service() {
         val wechat = appPackage == AutoSendService.PACKAGE_WECHAT
         val qq = appPackage == AutoSendService.PACKAGE_QQ
         val chatApp = wechat || qq
-        val wechatGif = animated && wechat
         val clipboardRoute = wechat && !animated && SenderPrefs.wechatImageClipboard(this)
         val albumRoute = chatApp && !clipboardRoute && SenderPrefs.sendViaAlbum(this)
         val appName = if (wechat) "微信" else "QQ"
         SendLog.d(
             "发送",
             "策略 = " + (
-                if (appPackage == null) "分享（系统面板：没认出前台应用）"
+                if (appPackage == null) "分享（没认出前台应用）"
                 else if (!chatApp) "分享（其他应用）"
-                else if (clipboardRoute) "粘贴（微信静态图，设置里选的剪贴板）"
+                else if (clipboardRoute) "粘贴（微信静态图 + 剪贴板设置）"
                 else if (albumRoute) "相册（" + appName + (if (animated) "动图）" else "图片）")
                 else "分享（" + appName + (if (animated) "动图）" else "图片）")
                 )
@@ -558,7 +597,7 @@ class FloatingBallService : Service() {
             if (appPackage == null) {
                 // 认不出前台应用就别动无障碍了：直接把选择权交给系统面板。
                 showHint(getString(R.string.overlay_unknown_app))
-                shareByIntent(emoji, null, title, allowInfoRead = false)
+                shareByIntent(emoji, null, title)
                 return@launch
             }
             if (AutoSendService.isConnected && chatApp) {
@@ -595,6 +634,13 @@ class FloatingBallService : Service() {
                                 return@launch
                             }
 
+                            AutoSendService.PasteOutcome.CANCELLED -> {
+                                // v0.2.218：用户又点了一次 / 已经自己退出这个应用 —— 这一轮本来就不该发。
+                                // 什么提示都不给，更**不能**落到下面的分享路线：同一张图会发两遍。
+                                EmojiShare.releaseClipboardGrants(this@FloatingBallService)
+                                return@launch
+                            }
+
                             AutoSendService.PasteOutcome.FAILED -> {
                                 // 没粘进去就没人在读这张图，立刻收回（emc-1-029）。
                                 EmojiShare.releaseClipboardGrants(this@FloatingBallService)
@@ -602,14 +648,17 @@ class FloatingBallService : Service() {
                             }
                         }
                     }
-                } else if (albumRoute && sendViaAlbum(emoji)) {
-                    return@launch
+                } else if (albumRoute) {
+                    // v0.2.218：false = 这条路没走通，可以落回分享；true / null（这一轮取消）
+                    // 都到此为止 —— 取消那一支绝不能落回分享：用户只是又点了一下，
+                    // 屏幕上不该多弹一次分享（用户 m16984）。
+                    if (sendViaAlbum(emoji) != false) return@launch
                 }
                 // 走相册就等于跳过粘贴：动图经微信的粘贴会被压成静图，走过去等于白丢动画。
             }
             // 微信动图不点「更多信息」补读名字：那要再翻两次页面，而用户嫌的正是翻页面；
             // 认不出聊天对象就让他自己在选人页点一下。
-            shareByIntent(emoji, appPackage, title, allowInfoRead = !wechatGif)
+            shareByIntent(emoji, appPackage, title)
         }
     }
 
@@ -626,7 +675,7 @@ class FloatingBallService : Service() {
      * 写完先自检「相册里排第一的是不是我们这张」：确认不是就退回分享路线 ——
      * 宁可让用户多点一下，也不能让他把别人的图发出去。
      */
-    private suspend fun sendViaAlbum(emoji: EmojiEntity): Boolean {
+    private suspend fun sendViaAlbum(emoji: EmojiEntity): Boolean? {
         // 以前非 gif 一律报 image/*，相册发布那边只好兜底写成 image/png —— webp / jpg 的类型
         // 就这么被写错了。现在按扩展名报准。
         val mime = ImageTypes.mimeOf(emoji.filePath)
@@ -636,7 +685,7 @@ class FloatingBallService : Service() {
             return false
         }
         val check = AlbumPublish.verify(this, slot)
-        SendLog.d("相册", "自检：" + check.verdict + " —— " + check.detail)
+        SendLog.d("相册", "自检：" + check.verdict + " " + check.detail)
         if (check.verdict == AlbumPublish.Verdict.FAIL) {
             showHint(getString(R.string.overlay_album_check_failed))
             return false
@@ -671,6 +720,20 @@ class FloatingBallService : Service() {
                 true
             }
 
+            AutoSendService.AlbumOutcome.CANCELLED -> {
+                // v0.2.218：用户又点了一次 / 已经自己退出这个应用：这一轮不该发，也不退回分享。
+                // 连提示都不给 —— 屏幕上什么都没发生，正是他要的「我退出了，流程就停」。
+                SendLog.d("相册", "这一轮取消：不点、不提示、不退回分享")
+                null
+            }
+
+            AutoSendService.AlbumOutcome.MANUAL -> {
+                // v0.2.219：选图页已经开着，只是认不出哪一格是我们刚写进去的那张。这一页就留着
+                // 让用户自己点一下 —— 退回分享会把选图页盖掉、再拉一层分享面板（用户 m17147）。
+                showHint(getString(R.string.overlay_album_manual))
+                null
+            }
+
             AutoSendService.AlbumOutcome.FAILED -> {
                 showHint(getString(R.string.overlay_album_failed))
                 false
@@ -680,21 +743,18 @@ class FloatingBallService : Service() {
 
     /**
      * 第二条路：把图片交给微信自己的分享入口，再在它的「选择聊天」页里点出目标。
-     * [appPackage] 为 null 时（没认出前台应用）只把图交给系统分享面板，不替用户认人。
-     * 目标名读不到时，这里才做最后那次「点开更多信息」的补读 —— 它会切一下页面，
-     * 所以必须赶在分享之前做完。allowInfoRead = false 时跳过这最后一次补读
-     * （微信动图那条路用得上：补读要翻两次页面，代价比让用户点一下更高）。
+     * [appPackage] 为 null 时（没认出前台应用）只把图交给系统分享面板，不替用户认人；
+     * 不是微信 / QQ 时同样只交给系统面板 —— 不替用户在别人的分享页里做选择（v0.2.203）。
+     *
+     * v0.2.203 起不再有「读不到名字就点开更多信息补读一次」这条路：为一行标题付两次页面
+     * 跳转 + 两次读树，代价比让用户自己在列表里点一下更高（用户 m14582 批准）。
      */
     private suspend fun shareByIntent(
         emoji: EmojiEntity,
         appPackage: String?,
-        knownTarget: String?,
-        allowInfoRead: Boolean = true
+        knownTarget: String?
     ) {
-        var target = knownTarget ?: AutoSendService.readChatTitle()
-        if (target == null && allowInfoRead && AutoSendService.isConnected) {
-            target = AutoSendService.readChatTitleViaInfo()
-        }
+        val target = knownTarget ?: AutoSendService.readChatTitle()
 
         val result = EmojiShare.send(this, emoji, appPackage)
         SendLog.d("发送", "分享结果 = " + result.javaClass.simpleName)
@@ -731,14 +791,17 @@ class FloatingBallService : Service() {
         val timeout = if (result is EmojiShare.Result.SentToApp) 8000L else 15000L
         when (AutoSendService.clickChatByName(name, timeout, appPackage)) {
             AutoSendService.ChatClick.CLICKED ->
-                showHint(getString(R.string.overlay_auto_clicked, name))
+                showHint(getString(R.string.overlay_auto_clicked, name), name)
 
             // 走到确认框但按设置撒手了：这不是失败，别再说「请在列表中选择」。
             AutoSendService.ChatClick.DEFERRED ->
                 showHint(getString(R.string.overlay_confirm_manual))
 
             AutoSendService.ChatClick.NO_TARGET ->
-                showHint(getString(R.string.overlay_auto_failed, name))
+                showHint(getString(R.string.overlay_auto_failed, name), name)
+
+            // v0.2.218：用户自己把「选择聊天」页关了，或者又点了一次表情：什么都别说。
+            AutoSendService.ChatClick.CANCELLED -> Unit
         }
     }
 
@@ -750,10 +813,14 @@ class FloatingBallService : Service() {
      * 记一笔历史：这里原先是拿悬浮窗自己画的 —— 因为发送那一刻应用已经退到后台
      * （前面是微信或系统分享面板），MIUI 这类 ROM 会把后台应用的 Toast 一并拦掉，
      * 而那条提示正是当时唯一想知道的东西。改成系统 Toast 后，如果在微信里看不到
-     * 提示，多半就是被 ROM 拦了：原文永远写在日志「提示」那一行里，可回查。
+     * 提示，多半就是被 ROM 拦了：日志「提示」那一行记着当时弹的是哪一句。
+     *
+     * v0.2.220：[secret] 是这条提示里夹带的用户内容（聊天对象名）。屏幕上照旧显示原文，
+     * 落盘的日志里换成指纹 —— 日志会被云备份带走、也会被用户导出发给别人（用户 m17288）。
      */
-    private fun showHint(message: String) {
-        SendLog.d("提示", message)
+    private fun showHint(message: String, secret: String? = null) {
+        val logged = if (secret.isNullOrEmpty()) message else message.replace(secret, SendLog.mask(secret))
+        SendLog.d("提示", logged)
         runCatching {
             toast?.cancel()
             toast = Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).also { it.show() }

@@ -70,8 +70,8 @@ class LoggingFileProvider : FileProvider(R.xml.file_paths) {
     override fun openAssetFile(uri: Uri, mode: String): AssetFileDescriptor? = try {
         val afd = super.openAssetFile(uri, mode)
         SendLog.d(
-            TAG, caller() + " 直接取图 " + short(uri) + " mode=" + mode + " → 成功，" +
-                    "fd 大小 " + runCatching { afd?.parcelFileDescriptor?.statSize }.getOrNull()
+            TAG, caller() + " 直接取图 " + short(uri) + " mode=" + mode + " → ok " +
+                    "fdSize=" + runCatching { afd?.parcelFileDescriptor?.statSize }.getOrNull()
         )
         afd
     } catch (e: Exception) {
@@ -92,14 +92,14 @@ class LoggingFileProvider : FileProvider(R.xml.file_paths) {
         if (afd == null) {
             SendLog.d(
                 TAG, caller() + " 按类型取图 " + short(uri) + " filter=" + mimeTypeFilter +
-                        " → 没有内容（父类返回 null）"
+                        " → null（父类直接返回）"
             )
             null
         } else {
             SendLog.d(
                 TAG, caller() + " 按类型取图 " + short(uri) + " filter=" + mimeTypeFilter +
-                        " → 成功，长度 " + afd.length + " 字节（声明 " + afd.declaredLength + "），" +
-                        "fd 真实大小 " + runCatching { afd.parcelFileDescriptor.statSize }.getOrDefault(-1L)
+                        " → ok len=" + afd.length + " declared=" + afd.declaredLength + " " +
+                        "fdSize=" + runCatching { afd.parcelFileDescriptor.statSize }.getOrDefault(-1L)
             )
             afd
         }

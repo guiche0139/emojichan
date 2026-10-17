@@ -1,22 +1,36 @@
 package com.aris.emojichan.sender
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.InputMethodManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 「表情自动发送」无障碍服务。
@@ -32,7 +46,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 安全底线：名字读不到、列表里找不到、或者找到多个同名 —— 一律不点，
  * 让用户自己选。绝不点「最近第一个」，否则刚跟别人聊完就会发错人。
  */
-class AutoSendService : AccessibilityService() {
+open class AutoSendService : AccessibilityService() {
 
     /**
      * 「点会话」的结果。
@@ -41,8 +55,12 @@ class AutoSendService : AccessibilityService() {
      * 这两种情况该给用户的提示完全不同，所以拆开。
      *
      * 放在类里（而不是 companion 里）：外部直接写 AutoSendService.ChatClick.DEFERRED。
+     *
+     * v0.2.218 加 [CANCELLED]：用户自己把这屏关了 —— 他从「选择聊天」页退出来，或者我们还没跑完
+     * 他又点了一次表情。这种情况**什么都别做、什么都别说**：既不报「未自动选中」，
+     * 也绝不能退回分享路线（同一张图会发两遍，用户 m16984）。
      */
-    enum class ChatClick { CLICKED, NO_TARGET, DEFERRED }
+    enum class ChatClick { CLICKED, NO_TARGET, DEFERRED, CANCELLED }
 
     /**
      * 相册路线的结果。
@@ -56,8 +74,14 @@ class AutoSendService : AccessibilityService() {
      * - [UNCERTAIN]：点完格子之后页面确实换了，但既没读到确认键、也认不出聊天页
      *   （QQ 上点第一格常常就是直接发）。发没发出去说不准 —— 调用方**绝不能**落回分享路线：
      *   宁可少发一张，也不能同一张发两遍（emc-2-031）。
+     * - [CANCELLED]：这一轮**不该发**。两种来源：用户又点了一次表情（这一次请求把上一次作废），
+     *   或者他已经自己退出当前应用。调用方同样**绝不能**落回分享路线：这不是「没成功」，
+     *   而是「这次别发了」（用户 m16984：手动退出之后还弹了一次分享）。
+     * - [MANUAL]（v0.2.219）：选图页已经开着，但认不出哪一格是我们刚写进去的那张。这一页
+     *   就留在屏幕上交给用户自己点（用户 m17147：认不出还退回分享，等于把选图页盖掉、再拉一次
+     *   分享面板）。调用方**绝不能**落回分享路线，也别当成失败提示。
      */
-    enum class AlbumOutcome { SENT, STAGED, ALREADY_SENT, FAILED, UNCERTAIN }
+    enum class AlbumOutcome { SENT, STAGED, ALREADY_SENT, FAILED, UNCERTAIN, CANCELLED, MANUAL }
 
     /**
      * 粘贴路线的结果。
@@ -69,8 +93,11 @@ class AutoSendService : AccessibilityService() {
      * ALREADY_SENT = 用户在采样空档里自己点掉了「发送」（emc-2-017）：和
      * [AlbumOutcome.ALREADY_SENT] 一个道理，调用方同样必须当成「走通了」——
      * 退回分享会把同一张图再发一遍。
+     *
+     * v0.2.218 加 [CANCELLED]：和 [AlbumOutcome.CANCELLED] 一样 —— 这一轮不该发，
+     * 调用方既不要退回分享，也不要弹任何提示。
      */
-    enum class PasteOutcome { SENT, STAGED, ALREADY_SENT, FAILED }
+    enum class PasteOutcome { SENT, STAGED, ALREADY_SENT, FAILED, CANCELLED }
 
     companion object {
         const val PACKAGE_WECHAT = "com.tencent.mm"
@@ -83,6 +110,12 @@ class AutoSendService : AccessibilityService() {
          */
         val WATCHED_PACKAGES = setOf(PACKAGE_WECHAT, PACKAGE_QQ)
 
+        /** 日志里显示的应用名：只有白名单应用会出现在日志里（用户 m15752）。 */
+        private val APP_LOG_NAMES = mapOf(
+            PACKAGE_WECHAT to "微信",
+            PACKAGE_QQ to "QQ"
+        )
+
         private const val EDIT_TEXT_CLASS = "android.widget.EditText"
 
         /**
@@ -94,12 +127,69 @@ class AutoSendService : AccessibilityService() {
         private const val DEFAULT_CLICK_TIMEOUT_MS = 8000L
 
         /**
+         * v0.2.218：点「+」的几招，按顺序试，每招之后回头看一眼面板有没有真的长出来。
+         * 微信排前面那两招是因为用户 m16984 的日志证明它既不吃无障碍点击、也不吃正中间的手势
+         * （见 [openPlusPanel]）；QQ 从来没出过这个问题，就让它继续用最稳的那一招打头。
+         */
+        private val PLUS_ORDER_WECHAT = listOf("手势点上沿", "手势点中心", "无障碍点击", "先点输入框再点")
+        private val PLUS_ORDER_DEFAULT = listOf("无障碍点击", "手势点中心", "手势点上沿", "先点输入框再点")
+
+        /** 「+」文案里表示面板收着的那半句（微信：「更多功能按钮，已折叠」）。 */
+        private const val PLUS_COLLAPSED_TEXT = "已折叠"
+
+        /** 「选择聊天」页上那个取消按钮的文案：见过又连着两轮不见了 = 这一页被用户关掉了。 */
+        private const val PICKER_CANCEL_TEXT = "取消"
+
+        /**
+         * v0.2.218：格子文案里的时间跟「现在」差多少分钟以内，才算「这张就是我们刚写进去的」。
+         * 我们写完槽位到打开选图页只隔几百毫秒，5 分钟足够宽；真正要滤掉的是
+         * 「今天 00:00」那种读不出时分的假时间 —— v0.2.217 就是这么把今天拍的照片全判成旧的。
+         */
+        private const val CELL_STAMP_MATCH_MIN = 5L
+
+        /**
+         * v0.2.220：格子时间跟「刚给槽位刷的 DATE_TAKEN」差多少分钟以内算同一张。
+         * 比 [CELL_STAMP_MATCH_MIN] 紧一档 —— QQ 只印到分钟，我们写入到毫秒，48 秒的截断
+         * 会落在 1 分钟里；两分钟足够容下「选图页晚开一步」，又不至于挑到隔壁的截图。
+         */
+        private const val CELL_STAMP_WRITTEN_MIN = 2L
+
+        /** 选图页现场最多列几个格子（v0.2.220：原来 24 个，QQ 一行 1.4 KB，全是拍摄时间）。 */
+        private const val CELL_DUMP_LIMIT = 8
+
+        /**
+         * 格子文案里的时间：微信写「10月15日」「2025年10月15日」「今天 12:03」「昨天 21:03」，
+         * 也有只写「12:03」的。三条正则分别认「年月日」「月日」「时分」，
+         * [cellStamp] 把手里这几段拼一个 LocalDateTime。
+         */
+        private val CELL_DATE_YMD =
+            Regex("(\\d{4})\\s*[年/-]\\s*(\\d{1,2})\\s*[月/-]\\s*(\\d{1,2})\\s*日?")
+        private val CELL_DATE_MD = Regex("(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日")
+        private val CELL_TIME_HM = Regex("(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)")
+        /**
+         * v0.2.220：QQ 的选图页写「16点44分」「16点」。微信那种文件名里没有时分，
+         * 所以这条只在前面几条都读不出时间时才用。
+         */
+        private val CELL_TIME_CN = Regex("(\\d{1,2})\\s*点\\s*(?:(\\d{1,2})\\s*分)?")
+
+        /** 日志里写时间用的格式，跟系统相册里那行「10-15 12:03」一致，看着眼熟。 */
+        private val CELL_STAMP_FMT = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+        /**
          * 收到「非白名单包」的换页事件后，隔多久再复查一次前台到底是谁。
          * 进微信时经常先收到桌面那条事件、后收到微信那条（顺序还会反过来），
          * 立刻下结论就会把「正在切进来」误判成「已经切走」，球于是不出现。
          */
         private const val FOREGROUND_RECHECK_DELAY_MS = 400L
         private const val FOREGROUND_RECHECK_LATE_MS = 1400L
+
+        /**
+         * 这些包报到时不算「用户切走了」：下拉通知栏、系统弹窗都会抢一次换页事件。
+         * 旧实现靠「只看 TYPE_APPLICATION 的窗口」等价地做到这一点；v0.2.203 起不再枚举窗口
+         * （flagRetrieveInteractiveWindows 关掉了），改成显式排除 —— 输入法包名从系统里查，
+         * 见 [loadImePackages]。
+         */
+        private val SHELL_PACKAGES = setOf("com.android.systemui")
 
         /** 聊天页判据：输入框必须落在屏幕这个比例以下（可排除微信首页顶部的搜索框）。 */
         private const val INPUT_TOP_RATIO = 0.45f
@@ -171,9 +261,6 @@ class AutoSendService : AccessibilityService() {
         /** 微信 / QQ 给头像的无障碍文案是「昵称头像」，这是聊天对象名最可靠的来源。 */
         private const val AVATAR_SUFFIX = "头像"
 
-        /** 聊天页右上角那个「…」按钮的无障碍文案；直接读不到名字时，点它进聊天信息页补读。 */
-        private val INFO_BUTTON_TEXTS = setOf("更多信息", "聊天信息")
-        private const val INFO_PAGE_DELAY_MS = 900L
         private const val INFO_BACK_DELAY_MS = 600L
 
         /** 剪贴板路线：长按输入框弹出的菜单里那一项。 */
@@ -220,12 +307,47 @@ class AutoSendService : AccessibilityService() {
         private val ALBUM_ENTRY_TEXTS = setOf(
             "相册", "图片", "照片", "图库", "本地相册", "手机相册", "从相册选择", "所有图片", "图片和视频"
         )
+        /**
+         * 判断「+」面板**是不是已经开着**：故意不含「图片」—— 那是聊天里图片消息的无障碍文案
+         * （见 [IGNORED_MEDIA]），拿它当判据会把聊天里的图当成「面板开着」，于是跳过点「+」。
+         */
+        private val ALBUM_PANEL_OPEN_TEXTS = ALBUM_ENTRY_TEXTS - "图片"
         /** 二级入口：QQ 点「图片」之后那一层菜单里的「相册」。这里不放「图片」，免得原地打转。 */
         private val ALBUM_ENTRY_SECOND_TEXTS = setOf(
             "相册", "本地相册", "手机相册", "从相册选择", "所有图片", "图片和视频", "图库"
         )
-        /** 相册第一格图的最小边长（占屏宽比例）——比这小的是图标，不是格子。 */
+        /**
+         * 面板入口的最大边长（像素）。聊天里的图片消息无障碍文案也叫「图片」，是一块
+         * 284×315 的大块头；「+」面板里的图标都是小方块 —— 尺寸这一条把它挡在门外
+         * （v0.2.213，被略过的大块头按 1.5 秒限流记一行）。
+         */
+        private const val ALBUM_ENTRY_MAX_PX = 160
+        /** 相册第一格图的最小边长（占内容区宽比例）——比这小的是图标，不是格子。 */
         private const val ALBUM_CELL_MIN_RATIO = 0.2f
+        /** 第一格图上面那条线（占内容区高度比例）：标题栏 / 搜索框那一带不算。 */
+        private const val ALBUM_CELL_TOP_RATIO = 0.05f
+        /**
+         * v0.2.219：进了选图页之后还愿意等格子长出来多久（毫秒），每 [ALBUM_CELL_POLL_MS] 看一眼。
+         *
+         * 用户 m17147 那次日志：进选图页 1.5 秒（[ALBUM_PICKER_DELAY_MS]）时「格子候选 0 个 /
+         * 标题栏以下没有可读文本」—— 缩略图还没画出来就下结论了。等格子期间每看一眼都会
+         * 重新认一次「哪一格是我们写的那个文件名」，认出就走。
+         */
+        private const val ALBUM_CELL_WAIT_MS = 3000L
+        private const val ALBUM_CELL_POLL_MS = 400L
+        /**
+         * v0.2.219：开跑时如果上一张还停在应用的选图 / 预览页，最多按几次返回把它收回去。
+         *
+         * 微信上「预览页 → 选图页 → 聊天页」正好两步，多按一下就可能从聊天里退出去。
+         */
+        private const val ALBUM_BACKOUT_MAX = 2
+        /**
+         * 无障碍树少于这么多节点 = 「还没长出来」（应用刚被拉起 / 窗口刚切过去的那一下），
+         * 这时所有判据都会落空。主动路线（粘贴 / 相册）先等它长出来再说。
+         */
+        private const val TREE_READY_MIN_NODES = 4
+        private const val TREE_READY_RETRIES = 3
+        private const val TREE_READY_DELAY_MS = 400L
         /**
          * 输入栏那条带子按**输入框**上下各放宽这么多（占输入框高度的比例）。
          *
@@ -249,11 +371,18 @@ class AutoSendService : AccessibilityService() {
         private const val ALBUM_SEND_POLL_MS = 400L
         /** 摊开「+」面板现场时，从输入框往上多看这么多像素。 */
         private const val ALBUM_PANEL_BAND_PX = 700
+        /**
+         * 等「+」面板长出来：每 [ALBUM_PANEL_POLL_MS] 看一眼，最多看 [ALBUM_PANEL_WAIT_MS]。
+         * 小窗 / 分屏下面板动画实测要 2.8 秒（用户 m15649），所以这三秒别再往下压。
+         */
+        private const val ALBUM_PANEL_POLL_MS = 400L
+        private const val ALBUM_PANEL_WAIT_MS = 3000L
+
         /** 相册首次使用会弹权限框，顺手点掉。 */
         private val ALBUM_ALLOW_TEXTS = setOf("允许", "始终允许")
 
-    /** 只有选图页 / 预览页才有的按钮文案：用来确认「预览页还开着」（emc-2-016）。 */
-    private val ALBUM_PICKER_MARK_TEXTS = setOf("原图", "预览", "编辑")
+        /** 只有选图页 / 预览页才有的按钮文案：用来确认「预览页还开着」（emc-2-016）。 */
+        private val ALBUM_PICKER_MARK_TEXTS = setOf("原图", "预览", "编辑")
 
         private const val MAX_TITLE_LENGTH = 24
         private const val MAX_DEPTH = 40
@@ -328,6 +457,14 @@ class AutoSendService : AccessibilityService() {
                 .getOrNull()
         }
 
+        /** 最近一次读树读到多少个节点：太少说明应用刚被拉起、树还没长出来。 */
+        fun lastReadNodeCount(): Int = instance?.lastReadNodeCount ?: 0
+
+        /** 兼容模式开关变了：让正在跑的服务立刻重新应用 flag（不用重装，也不用重开服务）。 */
+        fun refreshFlags() {
+            instance?.let { service -> service.handler.post { service.applyAccessibilityFlags() } }
+        }
+
         /**
          * 这些入口把异常吞掉是**故意的**：无障碍服务可能已经被系统断连，
          * 抛到调用方只会把悬浮窗那条链路一起带崩。但以前吞得一点痕迹不留，
@@ -341,14 +478,43 @@ class AutoSendService : AccessibilityService() {
          * 串行化闸门：整套自动化（读标题 / 粘贴 / 相册路线 / 点会话）共用一把锁。
          * 这些都是「一次性的界面操作」，内部全是 delay() 挂起点（最长 15 秒轮询），
          * 任意两条交错都会让匹配与点击落在被对方改过的页面上（emc-0-006）。
-         * 拿不到锁就**立刻放弃**，不排队 —— 排队会在几秒后突然点一下屏幕，更糟。
          */
         private val automation = Mutex()
 
-        private fun acquireAutomation(what: String): Boolean {
-            if (automation.tryLock()) return true
-            SendLog.d("自动发送", "上一次自动操作还没结束，放弃本次「" + what + "」")
-            return false
+        /**
+         * 请求号：每来一次新请求 +1。正在跑的那一轮在每个检查点都拿自己手里的号对一下，
+         * 对不上就自己收手 —— 这就是「用户又点了一次 / 手动退出，流程要停」的执行机制。
+         *
+         * 用户 m16984 的日志里，他手动退出第一轮、又点了一次表情，我们回他
+         * 「上一次自动操作还没结束，放弃本次 相册路线」，紧接着还弹了一次分享；
+         * 「一张图弹两次分享」的观感就是这么来的。
+         */
+        private val requestSeq = AtomicLong(0L)
+
+        /** 等上一轮收手的上限。它每个检查点都看一眼请求号，正常几十毫秒就退干净了。 */
+        private const val AUTOMATION_CANCEL_WAIT_MS = 4_000L
+
+        /** [gen] 还是最新的那一次请求吗？不是 = 该收手了。 */
+        private fun stale(gen: Long): Boolean = gen != requestSeq.get()
+
+        /**
+         * 拿闸门。返回 null = 这一轮别跑，调用方要把它当成 [AlbumOutcome.CANCELLED] /
+         * [PasteOutcome.CANCELLED] / [ChatClick.CANCELLED]，**绝不能退回分享路线**。
+         *
+         * v0.2.218 起不再「拿不到锁就放弃」：先给请求号 +1 让上一轮在下一个检查点收手，
+         * 再等它把锁放开（最多 [AUTOMATION_CANCEL_WAIT_MS]）。只有上一轮卡在读树那种不返回的
+         * 调用里、或者等锁期间用户又点了一次，才算真的放弃这次。
+         */
+        private suspend fun acquireAutomation(what: String): Long? {
+            val gen = requestSeq.incrementAndGet()
+            if (automation.tryLock()) return gen
+            SendLog.d("自动发送", "又点了一次，先让上一次收手（本次 " + what + " 在等）")
+            val got = withTimeoutOrNull(AUTOMATION_CANCEL_WAIT_MS) { automation.lock() }
+            if (got == null) {
+                SendLog.d("自动发送", "上一次一直没收手，放弃本次 " + what)
+                return null
+            }
+            return if (stale(gen)) null else gen
         }
 
         private fun releaseAutomation() {
@@ -364,25 +530,6 @@ class AutoSendService : AccessibilityService() {
         private const val AUTOMATION_TIMEOUT_MS = 60_000L
 
         /**
-         * 备选读法：聊天页面上读不到名字时，点开「更多信息」进聊天信息页，
-         * 从对端头像的「昵称头像」文案里取名字，再按返回键回到聊天页。
-         * 会切一下页面，所以只在直接读不到时调用。
-         */
-        suspend fun readChatTitleViaInfo(): String? {
-            val service = instance ?: return null
-            if (!acquireAutomation("读聊天信息页")) return null
-            return try {
-                withContext(Dispatchers.Main) {
-                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doReadChatTitleViaInfo() } }
-                        .onFailure { logFailure("读聊天信息页", it) }
-                        .getOrNull()
-                }
-            } finally {
-                releaseAutomation()
-            }
-        }
-
-        /**
          * 剪贴板路线：长按输入框 → 点「粘贴」→ 看输入区有没有多出图片 → 点「发送」。
          * 这条路的目的地天然是当前聊天，不需要认人；[PasteOutcome.FAILED] 由调用方退回分享路线，
          * [PasteOutcome.STAGED] 表示图已经就位、最后那一下留给了用户 —— 同样算这条路的终点；
@@ -390,10 +537,14 @@ class AutoSendService : AccessibilityService() {
          */
         suspend fun pasteIntoChat(): PasteOutcome {
             val service = instance ?: return PasteOutcome.FAILED
-            if (!acquireAutomation("粘贴到聊天")) return PasteOutcome.FAILED
+            // v0.2.218：拿不到闸门 = 用户已经又点了一次（或上一轮卡住），这一轮不该发。
+            val gen = acquireAutomation("粘贴到聊天") ?: return PasteOutcome.CANCELLED
             return try {
-                withContext(Dispatchers.Main) {
-                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doPasteIntoChat() } }
+                // v0.2.215：读树是逐节点 Binder IPC（微信聊天页 173 个节点就是 173 次往返），
+                // 以前整段挂在主线程上，读一次树期间界面是僵的。服务里没有任何 View / UI 调用
+                // （只有 AccessibilityNodeInfo + Handler），换到 Default 线程不影响功能。
+                withContext(Dispatchers.Default) {
+                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doPasteIntoChat(gen) } }
                         .onFailure { logFailure("粘贴到聊天", it) }
                         .getOrDefault(PasteOutcome.FAILED)
                 }
@@ -411,10 +562,11 @@ class AutoSendService : AccessibilityService() {
          */
         suspend fun sendPhotoViaAlbum(): AlbumOutcome {
             val service = instance ?: return AlbumOutcome.FAILED
-            if (!acquireAutomation("相册路线")) return AlbumOutcome.FAILED
+            // v0.2.218：见 [acquireAutomation] —— 这一次不跑，而调用方绝不能因此退回分享。
+            val gen = acquireAutomation("相册路线") ?: return AlbumOutcome.CANCELLED
             return try {
-                withContext(Dispatchers.Main) {
-                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doAlbumRoute() } }
+                withContext(Dispatchers.Default) {
+                    runCatching { withTimeout(AUTOMATION_TIMEOUT_MS) { service.doAlbumRoute(gen) } }
                         .onFailure { logFailure("相册路线", it) }
                         .getOrDefault(AlbumOutcome.FAILED)
                 }
@@ -433,12 +585,13 @@ class AutoSendService : AccessibilityService() {
             appPackage: String? = null
         ): ChatClick {
             val service = instance ?: return ChatClick.NO_TARGET
-            if (!acquireAutomation("点会话")) return ChatClick.NO_TARGET
+            // v0.2.218：这一次不跑（用户又点了一次 / 上一轮卡住）—— 调用方什么都别说。
+            val gen = acquireAutomation("点会话") ?: return ChatClick.CANCELLED
             return try {
-                withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Default) {
                     runCatching {
                         withTimeout(timeoutMs + AUTOMATION_TIMEOUT_MS) {
-                            service.doClickChatByName(name, timeoutMs, appPackage)
+                            service.doClickChatByName(name, timeoutMs, appPackage, gen)
                         }
                     }
                         .onFailure { logFailure("点会话", it) }
@@ -459,7 +612,29 @@ class AutoSendService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    private val foregroundRecheck = Runnable { refreshForegroundFromWindows() }
+    /**
+     * 最近一次白名单换页事件带来的节点（用的时候爬到它的根）—— 读树起点之一。
+     * v0.2.203 不再枚举窗口，这个节点是「微信那个独立标题栏窗口」仅剩的一条线索。
+     */
+    @Volatile
+    private var lastWhitelistSource: AccessibilityNodeInfo? = null
+
+    /** 最近一次「不是输入法、也不是系统壳」的换页事件包名：计时收口时它是最新的证据。 */
+    @Volatile
+    private var lastNonImePackage: String? = null
+
+    /** 待定的「非白名单前台」：先记下来，等切换落定再看它算不算数。 */
+    @Volatile
+    private var pendingForeign: String? = null
+    @Volatile
+    private var pendingForeignAt = 0L
+
+    /** 输入法包名（连接时查一次）：键盘弹出来时前台会变成它，不能算「用户切走了」。 */
+    @Volatile
+    private var imePackages: Set<String> = emptySet()
+
+    private val foregroundSettleEarly = Runnable { settleForeground() }
+    private val foregroundSettleLate = Runnable { settleForeground() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -467,12 +642,15 @@ class AutoSendService : AccessibilityService() {
         isConnected = true
         SendLog.init(applicationContext)
         SendLog.d("服务", "无障碍服务已连接")
+        applyAccessibilityFlags()
+        SendLog.d("服务", "已启用的无障碍服务：" + enabledServicesDump())
+        imePackages = loadImePackages()
         // 服务可能是用户刚在设置里打开的，此时没有任何事件，先自己问一次。
-        refreshForegroundFromWindows()
+        refreshForeground()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        handler.removeCallbacks(foregroundRecheck)
+        clearForegroundTimers()
         SendLog.e("服务", "无障碍服务被系统断开（应用更新或手动关闭后会这样）")
         instance = null
         isConnected = false
@@ -482,7 +660,7 @@ class AutoSendService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(foregroundRecheck)
+        clearForegroundTimers()
         SendLog.d("服务", "无障碍服务销毁")
         instance = null
         isConnected = false
@@ -498,49 +676,243 @@ class AutoSendService : AccessibilityService() {
         if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = e.packageName?.toString() ?: return
 
+        // 输入法弹出来、通知栏拉下来，都只是「盖在上面」，不是用户切走了：直接忽略，
+        // 前台维持原状（旧实现靠「只看应用窗口」等价地做到这一点）。
+        if (isTransparent(pkg)) return
+        lastNonImePackage = pkg
+
         if (pkg in WATCHED_PACKAGES) {
-            // 白名单应用自己报到，最可信；顺手撤掉还没跑的复查。
-            handler.removeCallbacks(foregroundRecheck)
+            // 白名单应用自己报到，最可信；顺手撤掉还没跑的收口，并把这次事件的节点留着当读树起点。
+            clearForegroundTimers()
+            pendingForeign = null
             // 事件自己带着的文本一并记下：微信的聊天页会把标题塞在这里。
             // 注意这里是无条件赋值（可能为 null），免得旧聊天的名字一直留着被当成当前对象。
             val windowText = eventTextOf(e)
+            val textChanged = windowText != lastWindowText
             lastWindowText = windowText
-            SendLog.d("事件", "换页 " + pkg + "（白名单）窗口文本=" + (windowText ?: "无"))
+            lastWhitelistSource = runCatching { e.source }.getOrNull()
+            // 用户 m15752：日志只留白名单应用，而且同一段窗口文本重复报到时不重复写行 ——
+            // 微信在聊天页里每换一次界面都会报一条，带回来的文本往往一直是「微信」。
+            // 「事件敏感」是 v0.2.209 排查 Android 14 敏感数据门禁时留的字段，跑一次反射不额外读树。
+            if (textChanged) {
+                SendLog.d(
+                    "事件",
+                    "换页 " + appLabel(pkg) + " text=" + (windowText ?: "无") +
+                        " sensitive=" + probeBool(e, "isAccessibilityDataSensitive")
+                )
+            }
             updateForeground(pkg)
             updateForegroundApp(pkg)
             return
         }
-        SendLog.d("事件", "换页 " + pkg + "（非白名单，稍后复查）")
 
-        // 事件包名不在白名单里：可能是输入法 / 系统弹窗抢了这次「换页面」，
-        // 也可能只是切换动画途中的旧窗口，或者真的切走了。
-        // 不立刻下结论 —— 等切换落定，隔一会儿连问两次「现在前台是谁」。
-        handler.removeCallbacks(foregroundRecheck)
-        handler.postDelayed(foregroundRecheck, FOREGROUND_RECHECK_DELAY_MS)
-        handler.postDelayed(foregroundRecheck, FOREGROUND_RECHECK_LATE_MS)
+        // 非白名单：可能是切换动画途中的旧窗口，也可能真的切走了。不立刻下结论 ——
+        // 记下来，等切换落定再看一眼（见 [settleForeground]）。用户 m15752：这一步一个字都不记
+        //（以前还记个计数汇总，现在连计数也不要 —— 日志里只留白名单应用的进入 / 退出）。
+        pendingForeign = pkg
+        pendingForeignAt = SystemClock.uptimeMillis()
+        clearForegroundTimers()
+        handler.postDelayed(foregroundSettleEarly, FOREGROUND_RECHECK_DELAY_MS)
+        handler.postDelayed(foregroundSettleLate, FOREGROUND_RECHECK_LATE_MS)
     }
 
     /**
-     * 复查「当前前台是不是白名单应用」，兜住切换瞬间的误判。
-     * 读不到应用窗口时保持原状：宁可球多留一会儿，也别该出现时不出现。
+     * 复查「当前前台是谁」，兜住切换瞬间的误判。
+     *
+     * v0.2.203 起不再只认窗口列表（那要 flagRetrieveInteractiveWindows，默认已经关掉）：
+     * 改成「窗口列表（有就用）→ 活动窗口根 → 最近一次事件的包名」这条链，最后一个都读不出来时
+     * 保持原状：宁可球多留一会儿，也别该出现时不出现。
      */
-    private fun refreshForegroundFromWindows() {
-        val active = activeApplicationPackage()
-        SendLog.d("前台", "复查活动窗口 = " + (active ?: "null"))
+    private fun refreshForeground() {
+        val active = activePackageGuess() ?: lastNonImePackage
         if (active == null) return
+        // 用户 m15752：非白名单应用不写日志 —— 只有「前台是白名单」或「刚从白名单离开」
+        // 这类跟自动发送有关的结论才值得留一行。
+        if (active in WATCHED_PACKAGES || foregroundPackage != null) {
+            SendLog.d("前台", "复查前台 = " + appLabel(active))
+        }
         updateForeground(if (active in WATCHED_PACKAGES) active else null)
         // 悬浮球不看白名单：只要认得出前台是谁就记下来，它自己按用户勾的列表判断。
         updateForegroundApp(active)
     }
 
+    /**
+     * 计时收口：非白名单应用报到之后等一小会儿，看白名单会不会自己报到。
+     *
+     * 进微信时经常先收到桌面那条事件、后收到微信那条（顺序还会反过来），立刻下结论就会把
+     * 「正在切进来」误判成「已经切走」，球于是不出现。v0.2.202 及以前这里问的是窗口列表
+     * （windows），关掉那条 flag 之后没得问了 —— 改成问「活动窗口根是谁」，问不出来才按
+     * 事件包名下结论。两次（400ms / 1400ms）都判一遍，第二次能纠正第一次的误判。
+     */
+    private fun settleForeground() {
+        if (pendingForeign == null) return
+        val guess = activePackageGuess()
+        val verdict = guess ?: pendingForeign!!
+        val waited = SystemClock.uptimeMillis() - pendingForeignAt
+        // 用户 m15752：非白名单应用不写日志。收口结果只在「落定到白名单」时记一行；
+        // 「切走了」这件事由 [updateForeground] 的「退出」那行表达，不会漏。
+        if (verdict in WATCHED_PACKAGES) {
+            SendLog.d(
+                "前台",
+                "收口 waited=" + waited + "ms by=" +
+                    (if (guess == null) "事件包名" else "活动窗口根") + " fg=" + appLabel(verdict)
+            )
+        }
+        updateForeground(if (verdict in WATCHED_PACKAGES) verdict else null)
+        updateForegroundApp(verdict)
+    }
+
+    private fun clearForegroundTimers() {
+        handler.removeCallbacks(foregroundSettleEarly)
+        handler.removeCallbacks(foregroundSettleLate)
+    }
+
+    /** 系统里所有输入法的包名：它们报到时不算「用户切走了」。 */
+    private fun loadImePackages(): Set<String> = runCatching {
+        val imm = getSystemService(InputMethodManager::class.java) ?: return emptySet()
+        (imm.enabledInputMethodList + imm.inputMethodList).map { it.packageName }.toSet()
+    }.getOrDefault(emptySet())
+
+    /** 这个包报到算不算「用户切走了」。输入法列表可能还没查出来，那时先按少见处理。 */
+    private fun isTransparent(pkg: String): Boolean {
+        // 我们自己的悬浮球 / 面板也是「盖在微信上面」的窗口，不能当成用户切走了：
+        // 否则点球那一刻前台会被判成我们自己，读树的包名过滤失效、可读区域被压成球那么大。
+        if (pkg == packageName) return true
+        if (pkg in SHELL_PACKAGES) return true
+        if (imePackages.isEmpty()) imePackages = loadImePackages()
+        return pkg in imePackages
+    }
+
+    /**
+     * 把用户在设置里选的 flag 应用到服务上。
+     *
+     * 清单里只留了最基础的那条（flagDefault），两条「有代价的」（读树包含全部节点 / 枚举窗口）
+     * 由这里按 [SenderPrefs.a11yLowOverhead] 决定去留 —— setServiceInfo() 改 flag 是即时生效的。
+     * 默认是**都加回来**（= v0.2.202 的识别方式）：实测（用户 m14729）关掉它们会让微信的粘贴
+     * 路线与 QQ 的相册路线直接掉回分享，所以只作为实验开关留着，不再默认精简。
+     *
+     * v0.2.207 起 base 里补回 [AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS]：低开销模式的
+     * 判据只删 2 / 64 两条，所以两种模式都带上它（用户 m15188 指定的实验，只动这一处）。
+     *
+     * v0.2.208：这条日志多打一个 isAccessibilityTool —— 它来自 auto_send_service_config.xml 的
+     * android:isAccessibilityTool="true"（没有运行时 setter，只能写在 XML 里），装包后看这一行
+     * 就能确认声明是不是真的生效了（用户 m15399 批准的实验）。
+     *
+     * v0.2.209 / v0.2.211 试过的「触摸探索」这条路已经收摊（用户 m15752 要求删掉那个开关）：
+     * 常开会让整机单击变成「探索」（要双击才点得动，用户 m15531 / m15570 两次实测），脉冲版
+     * 也只是诊断 —— 真正解开微信空壳根的是 v0.2.212，把服务组件名换成系统读屏「选择朗读」的
+     * 包名 + 类名（见 AndroidManifest.xml 那段注释与 md/无障碍核心.md）。
+     * 所以这里**永远把那条 flag 关着**，也不再有任何触摸探索开关。
+     *
+     * 这一行日志同时打出我们自己声明的 feedbackType / eventTypes，方便跟读屏的声明
+     * （[enabledServicesDump]）对比 —— 那几个值就是「我们像不像读屏」的证据。
+     */
+    private fun applyAccessibilityFlags() {
+        runCatching {
+            val info = serviceInfo ?: return
+            val low = SenderPrefs.a11yLowOverhead(this)
+            // v0.2.207：把 flagReportViewIds 也补回 base —— 与 v0.2.202（微信还能正常自动化那版）
+            // 相比，这是唯一还没补回来的一条。猜测（未证实）：它影响的不只是「给节点解析资源名」，
+            // 去掉之后微信的窗口只给到 class=null、0 子节点的合成根（QQ 不受影响）。
+            // 用户 m15188 批准：只改这一条，其他都不动，装包后复测微信小窗/全屏的相册与剪贴板。
+            val base = info.flags or AccessibilityServiceInfo.DEFAULT or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            // 触摸探索永远关着：它会让整机单击变「探索」（要双击），而微信那棵树已经靠
+            // 服务组件名拿到了（v0.2.212），不需要它。这一句同时兜住历史版本留下的常开状态。
+            info.flags = (if (low) {
+                base and AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS.inv() and
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS.inv()
+            } else {
+                base or AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            }) and AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE.inv()
+            setServiceInfo(info)
+            // v0.2.209 起这一行就是「微信为什么读不到树」那套排查的仪表盘，v0.2.211 又补上我们自己
+            // 的声明（feedback / 事件类型）与脉冲开关 —— 和 enabledServicesDump() 打出的读屏声明
+            // 摆在一起，就能直接看出「我们跟读屏差在哪」。
+            SendLog.d(
+                "服务",
+                "flag 已应用 low=" + low + " flags=" + info.flags +
+                    " isAccessibilityTool=" + runCatching { info.isAccessibilityTool }.getOrDefault(false) +
+                    " feedback=" + info.feedbackType + " events=" + info.eventTypes +
+                    " id=" + runCatching { info.id }.getOrNull() +
+                    " touchExplore=" + touchExplorationEnabled()
+            )
+            // v0.2.210：XML 里的 isAccessibilityTool 是系统在「启用服务」那一刻读的 ——
+            // 换了 APK 但没把服务关开一次，系统可能还在用旧配置（那我们就不是无障碍工具，
+            // Android 14+ 的敏感数据门禁照样把微信的树扣住）。这一行直接把话说明白。
+            if (!runCatching { info.isAccessibilityTool }.getOrDefault(false)) {
+                SendLog.w(
+                    "服务",
+                    "isAccessibilityTool=false：系统还在用旧配置。请到系统设置里把 EmojiChan 的无障碍服务" +
+                        "关掉再打开一次（必要时重启手机）"
+                )
+            }
+        }.onFailure {
+            SendLog.w("服务", "应用无障碍 flag 失败：" + (it.message?.take(60) ?: it.javaClass.simpleName))
+        }
+    }
+
+    /**
+     * v0.2.210 诊断：把当前启用的无障碍服务全列一遍（我们自己 + 别的读屏）。
+     *
+     * 用户问「能不能伪装成系统无障碍服务」，而社区实测是 TalkBack 能读到微信、普通服务读不到 ——
+     * 要照着抄，先得知道对方在这台机器上到底长什么样：是不是系统应用、feedbackType、
+     * capabilities、flags 各是什么。开着 TalkBack 的那次日志能一次把答案给全。
+     */
+    private fun enabledServicesDump(): String = runCatching {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+            ?: return@runCatching "（拿不到 AccessibilityManager）"
+        val list = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+        if (list.isNullOrEmpty()) return@runCatching "（没有已启用的无障碍服务）"
+        list.joinToString(" ｜ ") { info ->
+            val si = info.resolveInfo?.serviceInfo
+            val app = si?.applicationInfo
+            val system = runCatching {
+                ((app?.flags ?: 0) and
+                    (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+            }.getOrDefault(false)
+            runCatching { si?.packageName }.getOrNull() + "/" +
+                runCatching { si?.name?.substringAfterLast('.') }.getOrNull() +
+                " 系统应用=" + system +
+                " feedback=" + info.feedbackType +
+                " flags=0x" + Integer.toHexString(info.flags) +
+                " caps=" + runCatching { info.capabilities }.getOrDefault(-1) +
+                " 事件=0x" + Integer.toHexString(info.eventTypes) +
+                " 工具身份=" + runCatching { info.isAccessibilityTool }.getOrDefault(false)
+        }
+    }.getOrElse { "（列举失败：" + (it.message?.take(60) ?: it.javaClass.simpleName) + "）" }
+
+    /**
+     * 系统当前是不是开着触摸探索（v0.2.209 诊断用）。
+     *
+     * 社区实测（droidrun/mobilerun-portal issue #142 等）：微信只在「触摸探索」打开时启动的进程里
+     * 把控件树交出来，同一台机器上换成 TalkBack 就能读到完整的 62KB 树，换回别的服务立刻变空壳。
+     *
+     * 注意：AccessibilityService 没有 onTouchExplorationStateChanged 这个可重写的回调
+     * （那个方法在 AccessibilityManager.TouchExplorationStateChangeListener 上），所以这里改成
+     * 「用到的时候现查一次」—— 申请之后系统要不要真的打开，看日志里的这个值最直接。
+     */
+    private fun touchExplorationEnabled(): Boolean = runCatching {
+        (getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager)
+            ?.isTouchExplorationEnabled == true
+    }.getOrDefault(false)
+
     // ---------- 前台应用 ----------
+
+    /** 打日志用：白名单应用给中文名（别的包理论上不会进日志，原样给包名）。 */
+    private fun appLabel(pkg: String?): String =
+        if (pkg == null) "无" else APP_LOG_NAMES[pkg]?.let { it + "(" + pkg + ")" } ?: pkg
 
     private fun updateForeground(next: String?) {
         if (next == foregroundPackage) return
+        val prev = foregroundPackage
+        // 用户 m15752：日志只记白名单应用。这个字段本身就只为微信 / QQ 赋值（别的应用一律
+        // null），所以这两行正好就是「白名单的进入 / 退出」，一条不多。
         SendLog.d(
             "前台",
-            (foregroundPackage ?: "无") + " → " + (next ?: "无") +
-                "（自动发送：" + (if (next == null) "关" else "可用") + "）"
+            if (next != null) "进入 " + appLabel(next) + " auto=on"
+            else "退出 " + appLabel(prev) + " auto=off"
         )
         foregroundPackage = next
         foregroundListeners.forEach { listener ->
@@ -556,10 +928,12 @@ class AutoSendService : AccessibilityService() {
      */
     private fun updateForegroundApp(next: String?) {
         if (next == foregroundApp) return
-        SendLog.d(
-            "前台",
-            "球范围：" + (foregroundApp ?: "无") + " → " + (next ?: "无")
-        )
+        val prev = foregroundApp
+        // 用户 m15752：非白名单的应用不记录。这个字段是「任何应用」（给悬浮球判断显隐），
+        // 所以只有「进 / 出白名单」这种跟自动发送有关的切换才写一行。
+        if ((next != null && next in WATCHED_PACKAGES) || (prev != null && prev in WATCHED_PACKAGES)) {
+            SendLog.d("前台", "球范围：" + appLabel(prev) + " → " + appLabel(next))
+        }
         foregroundApp = next
         appListeners.forEach { listener ->
             runCatching { listener(next) }
@@ -570,6 +944,8 @@ class AutoSendService : AccessibilityService() {
      * 当前活动的「应用窗口」属于哪个包。
      * 刻意不看 [rootInActiveWindow]：输入法弹出来时活动窗口会变成它，
      * 而这里要找的是底下那个真正的应用。
+     * 只认窗口列表，所以**只有兼容模式（flagRetrieveInteractiveWindows）开着时才有结果** ——
+     * 平时前台是谁由 [activePackageGuess] 用别的证据回答。
      */
     private fun activeApplicationPackage(): String? = runCatching {
         val applicationWindows = windows.orEmpty()
@@ -579,13 +955,67 @@ class AutoSendService : AccessibilityService() {
         window?.root?.packageName?.toString()
     }.getOrNull()
 
-    /** 取当前应用窗口的根节点，供读界面时使用。 */
-    private fun activeRoot(): AccessibilityNodeInfo? = runCatching {
-        windows.orEmpty()
+    /**
+     * 猜当前前台是哪个包，按可信度依次试：
+     *   ① 窗口列表（要兼容模式，通常是空的）；
+     *   ② rootInActiveWindow（输入法弹出来时它指向输入法，用输入法包名排掉）；
+     *   ③ 最近一次非输入法、非系统壳的换页事件包名。
+     * 三条都读不出来时返回 null —— 由调用方决定「保持原状」。
+     */
+    private fun activePackageGuess(): String? {
+        activeApplicationPackage()?.takeIf { !isTransparent(it) }?.let { return it }
+        val rootPkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+        if (rootPkg != null && !isTransparent(rootPkg)) return rootPkg
+        return lastNonImePackage?.takeIf { !isTransparent(it) }
+    }
+
+    /** 顺着 parent 往上爬（最多 6 层），拿这个节点所在窗口的根。 */
+    private fun rootOf(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo = node ?: return null
+        var depth = 0
+        while (depth < 6) {
+            val parent = runCatching { current.parent }.getOrNull() ?: return current
+            current = parent
+            depth++
+        }
+        return current
+    }
+
+    /**
+     * 取当前应用窗口的根节点，供读界面时使用。
+     * ① 活动应用窗口（要窗口列表）→ ② rootInActiveWindow（包名对得上、且不是输入法 / 系统壳）。
+     * 最近一次白名单事件那个根**不在这里**给：它由 [applicationRoots] 单独加（要 refresh 验活，
+     * 而且只在当前应用就是那个白名单应用时才算数），免得在别的应用里读到上一页的残留。
+     */
+    private fun activeRoot(): AccessibilityNodeInfo? {
+        runCatching { windows.orEmpty() }.getOrDefault(emptyList())
             .firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
-            ?.root
-            ?: rootInActiveWindow
-    }.getOrNull()
+            ?.let { w -> runCatching { w.root }.getOrNull() }
+            ?.let { return it }
+        val active = runCatching { rootInActiveWindow }.getOrNull()
+        if (active != null) {
+            val pkg = runCatching { active.packageName?.toString() }.getOrNull()
+            val wanted = foregroundPackage
+            if (pkg != null && !isTransparent(pkg) && (wanted == null || pkg == wanted)) return active
+        }
+        return null
+    }
+
+    /**
+     * 最近一次白名单换页事件带来的**当前仍有效**的窗口根。
+     *
+     * 用之前先 refresh()：窗口关掉之后那个节点就失效了，refresh() 返回 false 就把它丢掉 ——
+     * 宁可少一个读树来源，也不能拿旧页面的节点当现场（那会让判据看见已经不存在的输入框）。
+     */
+    private fun freshWhitelistRoot(): AccessibilityNodeInfo? {
+        val node = lastWhitelistSource ?: return null
+        val alive = runCatching { node.refresh() }.getOrDefault(false)
+        if (!alive) {
+            lastWhitelistSource = null
+            return null
+        }
+        return rootOf(node)
+    }
 
     // ---------- 读聊天对象 ----------
 
@@ -604,47 +1034,52 @@ class AutoSendService : AccessibilityService() {
         }
         val nodes = ArrayList<AccessibilityNodeInfo>()
         roots.forEach { collect(it, nodes, 0) }
+        noteTreeSize(nodes.size)
         val owner = runCatching { roots.first().packageName?.toString() }.getOrNull()
 
-        val screenHeight = resources.displayMetrics.heightPixels
-        val screenWidth = resources.displayMetrics.widthPixels
-        val titleZone = (screenHeight * TITLE_ZONE_RATIO).toInt()
+        // 判据全部按「内容区」算，不按整块屏幕：小窗 / 分屏时应用只占屏幕一角，
+        // 按屏幕比例算会得出「下半屏没有输入框」，于是认不出聊天对象（用户 m14582 报的
+        // 「QQ / 微信小窗下识别不了」）。内容区由 applicationRoots() 每次读树时算好。
+        val area = contentArea()
+        val titleZone = area.top + (area.height() * TITLE_ZONE_RATIO).toInt()
+        val maxCenterX = area.left + (area.width() * TITLE_MAX_CENTER_RATIO).toInt()
         // 无论成不成，都把标题区摊开写进日志 —— 认错名字的锅就靠它来定位。
         val census = censusOf(nodes, titleZone)
         val windowInfo = windowSummary()
 
-        // 判据一：屏幕下半部分得有输入框 —— 这是聊天页才有的结构。
-        if (!hasInputBelow(nodes, (screenHeight * INPUT_TOP_RATIO).toInt())) {
+        // 判据一：内容区下半部分得有输入框 —— 这是聊天页才有的结构。
+        if (!hasInputBelow(nodes, area.top + (area.height() * INPUT_TOP_RATIO).toInt())) {
             SendLog.d(
                 "读标题",
-                "下半屏没找到输入框，判定不在聊天页（根=" + owner + "，节点 " + nodes.size + " 个，窗口 " +
-                    roots.size + " 个：" + windowInfo + "）。标题区候选：" + census
+                "下半屏没找到输入框，判定不在聊天页 根=" + owner + " nodes=" + nodes.size + " wins=" +
+                    roots.size + " " + windowInfo + " area=" + area.flattenToString() + "；标题候选：" + census
             )
             return null
         }
 
         // 活动窗口标题（有些 App 只在这里给出聊天对象名）优先，它最不容易认错。
+        // 但兼容模式关掉时读不到它（那要枚举窗口）—— 那就只靠下面两条。
         val winTitle = plausibleWindowTitle()
         if (winTitle != null) {
-            SendLog.d("读标题", "命中 " + SendLog.mask(winTitle) + "（来源=活动窗口标题）。标题区候选：" + census)
+            SendLog.d("读标题", "命中 " + SendLog.mask(winTitle) + " 来源=活动窗口标题；标题候选：" + census)
             return winTitle
         }
 
-        // 微信聊天页不暴露标题，但每条消息的头像带着「昵称头像」——从左半屏那个头像取名字。
-        val avatarName = partnerNameFromAvatars(nodes, screenWidth)
+        // 微信聊天页不暴露标题，但每条消息的头像带着「昵称头像」——从内容区左半边那个头像取名字。
+        val avatarName = partnerNameFromAvatars(nodes, area)
         if (avatarName != null) {
-            SendLog.d("读标题", "命中 " + SendLog.mask(avatarName) + "（来源=对端头像：" + avatarCensus(nodes, screenWidth) + "）")
+            SendLog.d("读标题", "命中 " + SendLog.mask(avatarName) + " 来源=对端头像 " + avatarCensus(nodes, area))
             return avatarName
         }
 
-        // 判据二：聊天对象名是顶部那条窄带里最靠上的短文本。
-        val picked = pickTitle(nodes, titleZone, screenWidth)
+        // 判据二：聊天对象名是内容区顶部那条窄带里最靠上的短文本。
+        val picked = pickTitle(nodes, area.top, titleZone, maxCenterX)
         SendLog.d(
             "读标题",
             (if (picked != null) "命中 " + SendLog.mask(picked) else "没认出来") +
-                "（根=" + owner + "，节点 " + nodes.size + " 个，窗口 " + roots.size + " 个：" + windowInfo +
-                "，窗口事件文本=" + SendLog.mask(lastWindowText) + "）。标题区候选：" + census +
-                "。头像：" + avatarCensus(nodes, screenWidth)
+                " 根=" + owner + " nodes=" + nodes.size + " wins=" + roots.size + " " + windowInfo +
+                " 事件文本=" + SendLog.mask(lastWindowText) + "；标题候选：" + census +
+                "；头像：" + avatarCensus(nodes, area)
         )
         if (picked != null) return picked
 
@@ -655,72 +1090,21 @@ class AutoSendService : AccessibilityService() {
     }
 
     /**
-     * 备选读法：点开聊天页右上角的「…」进「聊天信息」页，那里一定摆着对端的头像
-     * （无障碍文案是「昵称头像」），读到名字后按返回键回到聊天页。
-     * 只在确认自己确实在聊天页时才动手；点不开、或者点了发现还停在聊天页，就原样退出
-     * —— 绝不能因为补读把用户的聊天页弄乱。
-     */
-    private suspend fun doReadChatTitleViaInfo(): String? {
-        val screenHeight = resources.displayMetrics.heightPixels
-        val screenWidth = resources.displayMetrics.widthPixels
-        val inputMinTop = (screenHeight * INPUT_TOP_RATIO).toInt()
-        val nodes = ArrayList<AccessibilityNodeInfo>()
-        applicationRoots().forEach { collect(it, nodes, 0) }
-        if (!hasInputBelow(nodes, inputMinTop)) {
-            SendLog.w("读标题", "补读放弃：下半屏没找到输入框，不在聊天页")
-            return null
-        }
-        val infoButton = nodes.firstOrNull { node ->
-            val desc = node.contentDescription?.toString()?.trim().orEmpty()
-            if (desc !in INFO_BUTTON_TEXTS || !node.isClickable) return@firstOrNull false
-            val r = boundsOf(node)
-            r.width() > 0 && r.height() > 0 && r.centerX() > screenWidth * TITLE_MAX_CENTER_RATIO
-        }
-        if (infoButton == null) {
-            SendLog.w("读标题", "补读放弃：没找到右上角的「更多信息」按钮")
-            return null
-        }
-        SendLog.d("读标题", "补读：点开「" + infoButton.contentDescription + "」进聊天信息页")
-        if (!click(infoButton)) {
-            SendLog.d("读标题", "补读放弃：点不开「更多信息」")
-            return null
-        }
-        delay(INFO_PAGE_DELAY_MS)
-        val pageNodes = ArrayList<AccessibilityNodeInfo>()
-        applicationRoots().forEach { collect(it, pageNodes, 0) }
-        if (hasInputBelow(pageNodes, inputMinTop)) {
-            SendLog.d("读标题", "补读放弃：点了「更多信息」但还停在聊天页")
-            return null
-        }
-        val names = LinkedHashSet<String>()
-        val shown = StringBuilder()
-        for (node in pageNodes) {
-            val desc = node.contentDescription?.toString()?.trim().orEmpty()
-            if (desc.length <= AVATAR_SUFFIX.length || !desc.endsWith(AVATAR_SUFFIX)) continue
-            if (shown.isNotEmpty()) shown.append(" / ")
-            shown.append(desc)
-            val bare = stripInvisible(desc.substring(0, desc.length - AVATAR_SUFFIX.length)).trim()
-            if (looksLikeName(bare)) names.add(bare)
-        }
-        performGlobalAction(GLOBAL_ACTION_BACK)
-        delay(INFO_BACK_DELAY_MS)
-        SendLog.d("读标题", "聊天信息页头像：" + (if (shown.isEmpty()) "（无）" else shown.toString()))
-        return if (names.size == 1) names.first() else null
-    }
-
-    /**
      * 剪贴板路线：把剪贴板里的图片粘进当前聊天并发送。
      *
      * 之所以值得一试：目的地就是眼前这个会话，既不用认人、也没有「选人页」，
      * 群聊同样适用。代价是微信可能根本不认图片剪贴板 —— 那就原样退回去用分享。
      * 安全底线：只有确实看到输入区多出东西才点「发送」，绝不盲点。
      */
-    private suspend fun doPasteIntoChat(): PasteOutcome {
-        val metrics = resources.displayMetrics
-        val screenHeight = metrics.heightPixels
-        val screenWidth = metrics.widthPixels
-        val inputMinTop = (screenHeight * INPUT_TOP_RATIO).toInt()
-        val before = collectAll()
+    private suspend fun doPasteIntoChat(gen: Long): PasteOutcome {
+        val before = collectAllReady()
+        // v0.2.218：读树之前先看一眼这一轮还算不算数（用户又点了一次 / 已经退出当前应用）。
+        if (shouldStop(gen, foregroundPackage, "粘贴")) return PasteOutcome.CANCELLED
+        // 判据按内容区算：小窗 / 分屏时输入框不在「屏幕下半部分」（用户 m14582）。
+        val area = contentArea()
+        val inputMinTop = area.top + (area.height() * INPUT_TOP_RATIO).toInt()
+        // 下面几处量图 / 量带子都以它为基准，所以名字仍叫 screenWidth（值是内容区宽度）。
+        val screenWidth = area.width()
         if (!hasInputBelow(before, inputMinTop)) {
             SendLog.w("粘贴", "放弃：下半屏没找到输入框，不在聊天页")
             return PasteOutcome.FAILED
@@ -737,8 +1121,8 @@ class AutoSendService : AccessibilityService() {
         SendLog.d(
             "粘贴",
             "输入框 @" + box.left + "," + box.top + "-" + box.right + "," + box.bottom +
-                "，附近大图 " + beforeImages + " 个，窗口 " + windows.orEmpty().size +
-                " 个：" + windowSummary()
+                " nearImg=" + beforeImages + " wins=" + windows.orEmpty().size +
+                " " + windowSummary()
         )
 
         // 尝试 1：直接给输入框下发「长按」动作。
@@ -776,8 +1160,8 @@ class AutoSendService : AccessibilityService() {
         SendLog.d(
             "粘贴",
             "聚焦后输入框 @" + pressBox.left + "," + pressBox.top + "-" +
-                pressBox.right + "," + pressBox.bottom + "，附近大图 " + pressImages +
-                " 个，窗口 " + windows.orEmpty().size + " 个：" + windowSummary()
+                pressBox.right + "," + pressBox.bottom + " nearImg=" + pressImages +
+                " wins=" + windows.orEmpty().size + " " + windowSummary()
         )
         val pressed = longPress(pressBox.exactCenterX(), pressBox.exactCenterY())
         SendLog.d("粘贴", "长按手势结果 = " + pressed)
@@ -833,13 +1217,13 @@ class AutoSendService : AccessibilityService() {
         }
         SendLog.d(
             "粘贴",
-            "菜单候选：" + (if (entries.isEmpty()) "（没读到文本）" else entries.joinToString(" / ")) +
-                "，窗口 " + windows.orEmpty().size + " 个：" + windowSummary()
+            "菜单候选：" + (if (entries.isEmpty()) "(没读到文本)" else entries.joinToString(" / ")) +
+                " wins=" + windows.orEmpty().size + " " + windowSummary()
         )
         if (pasteNode == null) {
             // 一条候选文本都读不到 = 菜单压根没弹出来；读到别的项才叫「有菜单但没有粘贴」。
             val outcome = if (entries.isEmpty()) MenuOutcome.NOT_SHOWN else MenuOutcome.NO_PASTE
-            SendLog.w("粘贴", "菜单里没有「粘贴」（" + outcome + "）")
+            SendLog.w("粘贴", "菜单里没有「粘贴」 outcome=" + outcome)
             return outcome
         }
         val ok = click(pasteNode)
@@ -855,7 +1239,7 @@ class AutoSendService : AccessibilityService() {
      */
     private suspend fun dismissPasteMenu(inputMinTop: Int): Boolean {
         if (!hasInputBelow(collectAll(), inputMinTop)) {
-            SendLog.d("粘贴", "不按返回键：页面上已经没有输入框，再按就退出去了")
+            SendLog.d("粘贴", "不按返回：页面上已无输入框，按了会退出聊天")
             return false
         }
         performGlobalAction(GLOBAL_ACTION_BACK)
@@ -913,7 +1297,7 @@ class AutoSendService : AccessibilityService() {
                     ) {
                         SendLog.d(
                             "粘贴",
-                            "预览小窗已经不在了、聊天页的输入框也回来了 —— 图已经发出去了，不退回分享"
+                            "预览小窗已消失、输入框已回来 ⇒ 图已发出，不退回分享"
                         )
                         return PasteOutcome.ALREADY_SENT
                     }
@@ -938,15 +1322,15 @@ class AutoSendService : AccessibilityService() {
         if (sawPopup || sawImage) {
             SendLog.d(
                 "粘贴",
-                "输入区没多出图片，但刚才见过" + (if (sawPopup) "预览小窗" else "输入区里的图") +
-                    " —— 用户抢在前面发出去了，不退回分享"
+                "输入区没多出图片，但见过" + (if (sawPopup) "预览小窗" else "输入区里的图") +
+                    " ⇒ 用户已先发出，不退回分享"
             )
             return PasteOutcome.ALREADY_SENT
         }
         SendLog.d(
             "粘贴",
             // 输入框里可能就是用户刚写的草稿，打码后再写（emc-1-028）。
-            "输入区没多出图片，放弃。输入框文字=" + SendLog.mask(input.text?.toString())
+            "输入区没多出图片，放弃 输入框文字=" + SendLog.mask(input.text?.toString())
         )
         return PasteOutcome.FAILED
     }
@@ -966,7 +1350,7 @@ class AutoSendService : AccessibilityService() {
         val label = titleTextOf(send)?.trim().orEmpty()
         val at = "@" + boundsOf(send).flattenToString() + " " + send.className
         if (!SenderPrefs.autoConfirmLastStep(this)) {
-            SendLog.d("粘贴", spot + "上有「" + label + "」" + at + "，但设置里关了最后一步自动确认，交给你点")
+            SendLog.d("粘贴", spot + "上有「" + label + "」" + at + "，设置里关了最后一步自动确认，交给用户点")
             return PasteOutcome.STAGED
         }
         val ok = click(send)
@@ -976,9 +1360,9 @@ class AutoSendService : AccessibilityService() {
         val after = collectAll()
         SendLog.d(
             "粘贴",
-            "点「发送」后 " + PASTE_SEND_CHECK_MS + "ms 复查：" +
-                (if (hasInputBelow(after, inputMinTop)) "聊天页的输入框回来了" else "输入框仍然不在树里") +
-                "，窗口 " + windows.orEmpty().size + " 个：" + windowSummary()
+            "点发送后 " + PASTE_SEND_CHECK_MS + "ms 复查：" +
+                (if (hasInputBelow(after, inputMinTop)) "输入框回来了" else "输入框仍不在树里") +
+                " wins=" + windows.orEmpty().size + " " + windowSummary()
         )
         return PasteOutcome.SENT
     }
@@ -1041,13 +1425,231 @@ class AutoSendService : AccessibilityService() {
      * 最后一步受 [SenderPrefs.autoConfirmLastStep] 控制：开着就点掉（微信「发送」、QQ「确定」），
      * 关掉就停在预览页返回 [AlbumOutcome.STAGED]，图已经选好了，用户点一下就走。
      */
-    private suspend fun doAlbumRoute(): AlbumOutcome {
-        val screenHeight = resources.displayMetrics.heightPixels
-        val screenWidth = resources.displayMetrics.widthPixels
-        val inputTop = (screenHeight * INPUT_TOP_RATIO).toInt()
+    /**
+     * v0.2.218：把「+」点开 —— 一招一招试，每招之后回头看一眼面板有没有真的长出来。
+     *
+     * 为什么要有这一套：用户 m16723 / m16984 的日志里，点「+」这一下微信既不认无障碍点击
+     * （performAction 返回 true、面板没动），也不认正中间的注入手势（「系统报告手势已执行完」，
+     * 文案还是「更多功能按钮，已折叠」）—— 而同一份日志里点面板入口、点格子都点得动，
+     * 说明不是「注入整个不行」，是这一下没落到微信处理它的地方。所以这里把能想到的几招摆上，
+     * 谁成谁上，并把成的那一招写进日志：下次再出问题不用再猜。
+     *
+     * 每招都给满 [ALBUM_PANEL_WAIT_MS] 再换下一招，而且**换招之前先看面板**：
+     * 小窗下面板动画实测要 2.8 秒（用户 m15649），等超时≠没打开，而面板开着的时候
+     * 再点一下「+」就是把它关掉。
+     *
+     * 返回面板入口（成功）或 null（这一轮没打开）。
+     */
+    private suspend fun openPlusPanel(
+        page: List<AccessibilityNodeInfo>,
+        inputBox: Rect,
+        inputTop: Int,
+        myApp: String?,
+        gen: Long
+    ): AccessibilityNodeInfo? {
+        var nodes = page
+        var bar = inputBox
+        val order = if (myApp == PACKAGE_WECHAT) PLUS_ORDER_WECHAT else PLUS_ORDER_DEFAULT
+        for ((i, name) in order.withIndex()) {
+            if (shouldStop(gen, myApp, "相册")) return null
+            // 每一招之前都重新量一次输入栏：上一招要是把键盘叫出来了，输入栏连着「+」都上移了。
+            bar = inputBoxNode(nodes, inputTop)?.let { boundsOf(it) } ?: bar
+            // 动手之前再看一眼面板：上一招其实已经把它点开了的话，这一下就是关掉它。
+            albumEntryNode(nodes, bar, ALBUM_PANEL_OPEN_TEXTS)?.let {
+                SendLog.d("相册", "面板其实已经开了（「" + titleTextOf(it)?.trim() + "」），不再点「+」")
+                return it
+            }
+            val plus = plusButtonNode(nodes, bar)
+            if (plus == null) {
+                SendLog.w("相册", "开「+」第 " + (i + 1) + " 招之前找不到「+」按钮了，收手")
+                return null
+            }
+            val r = boundsOf(plus)
+            val fired = when (name) {
+                "无障碍点击" -> runCatching {
+                    plus.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }.getOrDefault(false)
 
-        val page = collectAll()
-        val box = inputBoxNode(page, inputTop)
+                "手势点中心" -> tapNode(r, 0.5f, "点「+」")
+
+                // 点在「+」的上沿：屏幕最底下那一条（系统手势区）有时会把落进去的触摸吃掉，
+                // 往里挪一点仍然落在同一个控件里，但避开了那条带子。
+                "手势点上沿" -> tapNode(r, 0.25f, "点「+」上沿")
+
+                // 先让输入框拿到焦点（键盘弹出来、输入栏连着「+」一起上移），再点新位置上的「+」。
+                else -> focusThenTapPlus(nodes, inputTop)
+            }
+            delay(ALBUM_PANEL_DELAY_MS)
+            val entry = waitAlbumEntry(bar, gen = gen, myApp = myApp)
+            // v0.2.220：一招一行 —— 原来「已发出」「不吃无障碍点击」「没打开面板」分三行写，
+            // 同一件事拆成三行只是让日志变长（用户 m17288）。
+            SendLog.d(
+                "相册",
+                "开「+」" + (i + 1) + "/" + order.size + "「" + name + "」fired=" + fired +
+                    (if (!fired && name == "无障碍点击") " clickable=" + plus.isClickable + " enabled=" + plus.isEnabled else "") +
+                    " @" + r.flattenToString() + " → " +
+                    (if (entry != null) "面板已开" else "面板没开，文案=" + (plusDesc() ?: "读不到"))
+            )
+            if (entry != null) return entry
+            nodes = collectAll()
+        }
+        val plus = plusButtonNode(nodes, bar)
+        SendLog.w(
+            "相册",
+            order.size.toString() + " 招都没打开「+」面板（" + order.joinToString(" / ") + "）。「+」现在：" +
+                (plus?.let { describeNode(it) } ?: "读不到") +
+                "；输入栏现场：" + dumpBar(nodes, bar, foregroundPackage)
+        )
+        return null
+    }
+
+    /**
+     * 先给输入框下发一次点击（键盘弹出来、输入栏连着「+」一起上移），再点新位置上的「+」。
+     *
+     * 这一招冲的是「屏幕最底下那一条被系统吃掉」：同一份代码在「+」位于 y≈2280 时点不动，
+     * 而别的页面位置都点得动（用户 m16984）。日志里把输入框上移了多少写出来 ——
+     * 没上移就说明输入框那一下也没生效，下一次不用再在这个方向费时间。
+     */
+    private suspend fun focusThenTapPlus(nodes: List<AccessibilityNodeInfo>, inputTop: Int): Boolean {
+        val box = inputBoxNode(nodes, inputTop) ?: return false
+        val before = boundsOf(box)
+        val focused = runCatching {
+            box.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }.getOrDefault(false)
+        delay(ALBUM_PANEL_DELAY_MS + 400L)
+        val after = collectAll()
+        val boxAfter = inputBoxNode(after, inputTop)?.let { boundsOf(it) }
+        SendLog.d(
+            "相册",
+            "先点输入框：action=" + focused + " 输入框 " + before.flattenToString() + " → " +
+                (boxAfter?.flattenToString() ?: "读不到") +
+                "（上移 " + (before.top - (boxAfter?.top ?: before.top)) + "px）"
+        )
+        val plus = plusButtonNode(after, boxAfter ?: before) ?: plusButtonNode(after, before) ?: return false
+        return tapNode(boundsOf(plus), 0.5f, "点「+」（输入栏上移之后）")
+    }
+
+    /**
+     * v0.2.218 检查点：这一轮还该继续吗。
+     *
+     * 返回 true = 收手。两个来源：① 用户又点了一次表情（请求号变了，这一轮作废）；
+     * ② 他已经自己离开当前应用（回桌面 / 切走）。用户 m16984 的复测里，他手动退出微信之后
+     * 我们还在原地跑满 8 秒的「点会话」，看起来就像「手动退出没生效」。
+     */
+    private fun shouldStop(gen: Long, myApp: String?, tag: String): Boolean {
+        val why = when {
+            stale(gen) -> "用户又点了一次，这一轮作废"
+            userLeftApp(myApp) -> "用户已经离开聊天应用（现在前台 " + (foregroundPackage ?: "?") + "）"
+            else -> return false
+        }
+        SendLog.d(tag, "收手：" + why + "；这一轮不发了，也不退回分享")
+        return true
+    }
+
+    /**
+     * 用户是不是已经离开我们驱动的那个应用了（回桌面 / 切到别的 App）。
+     *
+     * 只认「前台是桌面」这一条，别的都不算：读不到包名（窗口正在切）、还在白名单里、
+     * 是系统界面（systemui / android）都按「还在」处理 —— 宁可多跑一步，
+     * 也不要因为一次读不到就把流程半路掐掉。权限弹窗那种系统窗口也因此不会误伤。
+     */
+    private fun userLeftApp(myApp: String?): Boolean {
+        val now = foregroundPackage ?: return false
+        if (now == myApp) return false
+        if (now in WATCHED_PACKAGES) return false
+        if (now == "android" || now == "com.android.systemui") return false
+        val home = runCatching {
+            packageManager.resolveActivity(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
+            )?.activityInfo?.packageName
+        }.getOrNull()
+        if (home != null) return now == home
+        // 取不到桌面包名（Android 13+ 的包可见性）时只认读得出来的几个常见写法。
+        return now == "com.miui.home" || now.endsWith(".launcher") || now.contains("launcher")
+    }
+
+    /** 在节点矩形的竖向上按比例取一个点，注入一次轻点。 */
+    private fun tapNode(r: Rect, fy: Float, what: String): Boolean {
+        if (r.width() <= 0 || r.height() <= 0) return false
+        return gestureAt(r.exactCenterX(), r.top + r.height() * fy, TAP_MS, what)
+    }
+
+    /** 一个节点的一句话画像：文案 / 类名 / 可点 / enabled / 可见 / 包名 / 边界 / 窗口。 */
+    private fun describeNode(node: AccessibilityNodeInfo): String =
+        "文案=" + (titleTextOf(node)?.trim() ?: "-") + " cls=" + shortClass(node) +
+            " click=" + node.isClickable + " enabled=" + node.isEnabled +
+            " visible=" + node.isVisibleToUser + " pkg=" + node.packageName +
+            " @" + boundsOf(node).flattenToString() + " win=" + runCatching { node.windowId }.getOrDefault(-1)
+
+    /** 「+」此刻的无障碍文案（微信写「更多功能按钮，已折叠 / 已展开」）。读不到返回 null。 */
+    private fun plusDesc(): String? = collectAll()
+        .firstOrNull { titleTextOf(it)?.trim().orEmpty().startsWith(PLUS_CD) }
+        ?.let { titleTextOf(it)?.trim() }
+
+    /** 两格之间差多少分钟（绝对值）。 */
+    private fun absMinutes(a: LocalDateTime, b: LocalDateTime): Long =
+        kotlin.math.abs(Duration.between(a, b).toMinutes())
+
+    /**
+     * v0.2.219：格子现场照 —— 把**落在网格那条带子里**的节点全列出来（按位置排，不按树序），
+     * 连尺寸、能不能点、以及是不是我们刚写进去的那张（名字对得上就打 ★）一起记。
+     *
+     * 为什么改成全列：v0.2.218 那行只印「进池的 16 格 + 没进池的大块头」，用户 m17147 的日志里
+     * 我们刚写的 Emojichan.gif 两处都没出现 —— 屏幕顶上那个位置（第一行最左）到底有没有节点、
+     * 是什么节点，根本没记下来，于是只能猜。这一行现在把带子里每个节点连同 WxH 一起摊开，
+     * 「格子去哪儿了」当场就能看出来。
+     */
+    private fun cellDump(
+        band: List<AccessibilityNodeInfo>,
+        pool: List<AccessibilityNodeInfo>,
+        mine: String?
+    ): String {
+        // v0.2.220：只列「带文案的格子」，容器一概不列 —— 网格带里一半是 RecyclerView / ViewPager
+        // 这类 1080×1925 的大块头，位置和文案都对不上任何一格，白占地方（用户 m17288：一行 1.4 KB）。
+        val cells = band.filter { titleTextOf(it)?.trim().orEmpty().isNotEmpty() }
+        val mineCells = cells.filter { !mine.isNullOrEmpty() && titleTextOf(it)?.trim() == mine }
+        val shown = (mineCells + cells.sortedBy { cellRank(it) })
+            .distinctBy { cellRank(it) }.take(CELL_DUMP_LIMIT)
+        val line = shown.joinToString(" / ") { node ->
+            val r = boundsOf(node)
+            val text = titleTextOf(node)?.trim().orEmpty()
+            (if (text == mine) "★" else "") + shortClass(node) + "[" + text + "]@" + r.top + "," + r.left +
+                " " + r.width() + "x" + r.height() + (if (node.isClickable) " c" else "")
+        }
+        return "网格带 " + band.size + " 个（进池 " + pool.size + "，带字 " + cells.size +
+            "，列 " + shown.size + "）：" + (if (line.isEmpty()) "空" else line)
+    }
+
+    private suspend fun doAlbumRoute(gen: Long): AlbumOutcome {
+        var page = collectAllReady()
+        // v0.2.218：开跑前先看一眼这一轮还算不算数，顺带记住我们驱动的是哪个应用 ——
+        // 之后每一步都会用 [shouldStop] 收手（用户又点了一次 / 他已经回桌面走人）。
+        val myApp = foregroundPackage
+        if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
+        // 判据与几何全按内容区算：小窗 / 分屏下应用只占屏幕一角（用户 m14582）。
+        // 下面几处沿用 screenWidth 这个名字，值是内容区的宽度。
+        val area = contentArea()
+        val inputTop = area.top + (area.height() * INPUT_TOP_RATIO).toInt()
+        val screenWidth = area.width()
+        var box = inputBoxNode(page, inputTop)
+        // v0.2.219：上一张表情还停在应用的选图 / 预览页上时（用户点了球、图选好了却没点发送），
+        // 聊天页的输入框读不到 —— 那时退回分享会把这一页盖掉、再拉一层分享面板（用户 m17147
+        // 的第二次：什么都没做成，反而多弹了一次分享）。所以先按返回把它收回去，再找输入框。
+        // 判据卡在「选图页的标记（原图 / 预览 / 编辑）还在」上：只有站在应用的选图 / 预览页才按，
+        // 聊天页（没有输入框的那些页面也一样）一律不按。
+        var backs = 0
+        while (box == null && backs < ALBUM_BACKOUT_MAX && stillOnPickerPage(page)) {
+            backs++
+            SendLog.d(
+                "相册",
+                "上一张还停在选图 / 预览页（选图页标记还在、读不到输入框）：按返回收回去（第 " + backs + " 次）"
+            )
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            delay(ALBUM_PICKER_DELAY_MS)
+            if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
+            page = collectAll()
+            box = inputBoxNode(page, inputTop)
+        }
         if (box == null) {
             SendLog.w("相册", "放弃：下半屏没找到输入框，不在聊天页")
             return AlbumOutcome.FAILED
@@ -1055,12 +1657,18 @@ class AutoSendService : AccessibilityService() {
         val inputBox = boundsOf(box)
 
         // ① 输入栏最右边那个「+」。面板已经开着就别再点了 —— 那一下是把它关掉。
-        val albumShown = albumEntryNode(page, inputBox, setOf(ALBUM_ENTRY_TEXT))
+        //    v0.2.218：点「+」改成一招一招试，见 [openPlusPanel]。v0.2.217 只试了两下
+        //    （无障碍点击 + 正中间的注入手势），用户 m16984 的复测里微信两下都不认，
+        //    于是又退回分享 —— 而同一份日志里点面板入口、点格子都点得动。
+        var entryCandidate: AccessibilityNodeInfo? = null
+        val albumShown = albumEntryNode(page, inputBox, ALBUM_PANEL_OPEN_TEXTS)
         if (albumShown != null) {
             SendLog.d(
                 "相册",
-                "「+」面板已经开着（看到「相册」@" + boundsOf(albumShown).flattenToString() + "），跳过点「+」"
+                "「+」面板已开着 \"" + titleTextOf(albumShown)?.trim() +
+                    "\"@" + boundsOf(albumShown).flattenToString() + "，跳过点「+」"
             )
+            entryCandidate = waitAlbumEntry(inputBox, gen = gen, myApp = myApp)
         } else {
             val plus = plusButtonNode(page, inputBox)
             if (plus == null) {
@@ -1071,34 +1679,33 @@ class AutoSendService : AccessibilityService() {
                 )
                 return AlbumOutcome.FAILED
             }
-            SendLog.d(
-                "相册",
-                "点「+」@" + boundsOf(plus).flattenToString() + "（输入框 " + inputBox.flattenToString() + "）"
-            )
-            if (!click(plus)) {
-                SendLog.w("相册", "点「+」没成功")
-                return AlbumOutcome.FAILED
-            }
-            delay(ALBUM_PANEL_DELAY_MS)
+            entryCandidate = openPlusPanel(page, inputBox, inputTop, myApp, gen)
+            if (entryCandidate == null && shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
         }
 
         // ② 「+」面板里的相册入口（微信写「相册」，QQ 写「图片」）
-        val panel = collectAll()
-        val entry = albumEntryNode(panel, inputBox)
+        //    v0.2.213：改成等它长出来再认 —— 小窗下面板动画要 2 秒上下，早看的那一眼里
+        //    只有聊天消息（用户 m15649）。v0.2.217：这一步挪进 ① 的循环里，点一次看一次。
+        val entry = entryCandidate
         if (entry == null) {
+            if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
+            val panel = collectAll()
             SendLog.d(
                 "相册",
-                "「+」面板里没看到相册入口（在找「" + ALBUM_ENTRY_TEXTS.joinToString(" / ") + "」）。现场：" +
-                    dumpRows(panel, foregroundPackage, inputBox.top - ALBUM_PANEL_BAND_PX, raw = true, limit = 24)
+                "等了 " + ALBUM_PANEL_WAIT_MS + "ms 也没看到相册入口（在找「" + ALBUM_ENTRY_TEXTS.joinToString(" / ") + "」）。现场：" +
+                    dumpRows(
+                        panel, foregroundPackage, inputBox.top - ALBUM_PANEL_BAND_PX,
+                        raw = true, bounds = false, limit = 10
+                    )
             )
-            exitAlbumPage()
+            exitAlbumPage(inputTop)
             return AlbumOutcome.FAILED
         }
         val entryLabel = titleTextOf(entry)?.trim().orEmpty()
         SendLog.d("相册", "点面板入口「" + entryLabel + "」@" + boundsOf(entry).flattenToString())
         if (!click(entry)) {
             SendLog.w("相册", "点面板入口「" + entryLabel + "」没成功")
-            exitAlbumPage()
+            exitAlbumPage(inputTop)
             return AlbumOutcome.FAILED
         }
         delay(ALBUM_PICKER_DELAY_MS)
@@ -1106,21 +1713,19 @@ class AutoSendService : AccessibilityService() {
         // ②′ 二级入口：QQ 的「图片」进去以后还是个菜单，得再点一次「相册」。
         //     只在第一下点的不是「相册」本身时才补这一下 —— 微信点「相册」直接进选择器，不用多点。
         if (entryLabel != ALBUM_ENTRY_TEXT) {
-            val after = collectAll()
-            val second = albumEntryNode(after, inputBox, ALBUM_ENTRY_SECOND_TEXTS)
+            // v0.2.213：这一层菜单也是画出来的，同样等一等（比第一层短：它就在同一个面板里）。
+            // v0.2.216：等的同时盯住「是不是已经站在选图页上了」——QQ 的「照片」是直进图库的，
+            // 没有第二层。原来固定等满 1200ms，用户 m16559 的日志里每次白等 1.2 秒。
+            val second = waitAlbumEntry(
+                inputBox, ALBUM_ENTRY_SECOND_TEXTS, ALBUM_PANEL_POLL_MS * 3, stopOnPickerPage = true
+            )
             if (second != null) {
                 SendLog.d(
                     "相册",
-                    "再点一层入口「" + titleTextOf(second)?.trim() + "」@" + boundsOf(second).flattenToString()
+                    "二层入口=" + titleTextOf(second)?.trim() + " @" + boundsOf(second).flattenToString()
                 )
                 click(second)
                 delay(ALBUM_PICKER_DELAY_MS)
-            } else {
-                SendLog.d(
-                    "相册",
-                    "点「" + entryLabel + "」之后没看到第二层入口，直接找图片格子。现场：" +
-                        dumpRows(after, foregroundPackage, inputBox.top - ALBUM_PANEL_BAND_PX, raw = true, limit = 24)
-                )
             }
         }
 
@@ -1137,19 +1742,53 @@ class AutoSendService : AccessibilityService() {
 
         // ③ 第一格图 —— 刚插进相册的那张按时间倒序永远排第一
         val picker = collectAll()
-        val cell = firstAlbumCell(picker, screenWidth, screenHeight)
-        if (cell == null) {
-            SendLog.d(
+        // v0.2.213：先确认「真的站在选择页上」。入口那一下要是没点对（面板还没画出来就点、
+        // 或者点到了聊天里的图），我们还在聊天页上 —— 这时绝不能去「找格子」：聊天里的图片
+        // 消息一样是又大又能点的图片节点，点下去就是点到刚发出去的那条（用户 m15649 小窗实测）。
+        //    判据要卡死「就是我们刚才那个输入框回来了」：相册选择页顶上也常有个搜索框，
+        //    只要「有可编辑节点」就算数的话，正常进到选择页也会被误判成没进去。
+        val boxNow = inputBoxNode(picker, inputTop)?.let { boundsOf(it) }
+        val backToSameInput = boxNow != null &&
+            boxNow.centerY() - inputBox.centerY() in -inputBox.height() until inputBox.height()
+        if (backToSameInput && !stillOnPickerPage(picker)) {
+            SendLog.w(
                 "相册",
-                "相册里没找到图片格子。现场：" + dumpRows(picker, foregroundPackage, 0, raw = true, limit = 16)
+                "还没进到选图页：输入框还在 @" + boxNow!!.flattenToString() +
+                    "，选图页标记一个都没有 ⇒ 没把图交给应用，退回分享"
             )
-            exitAlbumPage()
             return AlbumOutcome.FAILED
         }
-        SendLog.d("相册", "点第一格图@" + boundsOf(cell).flattenToString())
+        if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
+        // ③′ v0.2.219：认我们那一格 —— 先认名字（我们刚写进相册的那个文件名），认不出才按时间。
+        //     缩略图是后到的（用户 m17147 那次进选图页 1.5 秒时一个格子都还没有），所以边等边认；
+        //     等的时候只看名字、不再刷现场日志。
+        val mine = AlbumPublish.lastSlotName()
+        var grid = picker
+        var cell = firstAlbumCell(grid, area, mine)
+        if (cell == null && !mine.isNullOrEmpty()) {
+            var waitedCell = 0L
+            while (cell == null && waitedCell < ALBUM_CELL_WAIT_MS) {
+                if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
+                delay(ALBUM_CELL_POLL_MS)
+                waitedCell += ALBUM_CELL_POLL_MS
+                grid = collectAll()
+                cell = firstAlbumCell(grid, area, mine, quiet = true)
+            }
+            if (cell != null) {
+                SendLog.d("相册", "等了 " + waitedCell + "ms 才等到我们那一格（名字=" + mine + "）")
+            }
+        }
+        if (cell == null) {
+            // v0.2.220：这里原来还要再摊一次整页现场（16 个节点）—— 上面 [cellDump] 已经把
+            // 带文案的格子列出来了，这一份是重复的（用户 m17288）。
+            // 选图页留在屏幕上交给用户自己点：把它盖掉再拉一层分享面板只会更乱（用户 m17147）。
+            SendLog.w("相册", "把选图页留给用户：不点、也不退回分享")
+            return AlbumOutcome.MANUAL
+        }
+        SendLog.d("相册", "点我们那一格@" + boundsOf(cell).flattenToString())
         if (!click(cell)) {
             SendLog.w("相册", "点第一格图没成功")
-            exitAlbumPage()
+            exitAlbumPage(inputTop)
             return AlbumOutcome.FAILED
         }
         delay(ALBUM_PREVIEW_DELAY_MS)
@@ -1175,11 +1814,12 @@ class AutoSendService : AccessibilityService() {
         if (send == null) {
             SendLog.d(
                 "相册",
-                "第一拍（" + waited + "ms）没看到确认键，继续等：选图标记=" +
-                    stillOnPickerPage(preview) + "，聊天页=" + chatPageIsBack(preview, inputBox, inputTop)
+                "第一拍 " + waited + "ms 没看到确认键，继续等：选图标记=" +
+                    stillOnPickerPage(preview) + " 聊天页=" + chatPageIsBack(preview, inputBox, inputTop)
             )
         }
         while (send == null && waited < ALBUM_PREVIEW_DELAY_MS + ALBUM_SEND_TIMEOUT_MS) {
+            if (shouldStop(gen, myApp, "相册")) return AlbumOutcome.CANCELLED
             delay(ALBUM_SEND_POLL_MS)
             waited += ALBUM_SEND_POLL_MS
             preview = collectAll()
@@ -1212,7 +1852,7 @@ class AutoSendService : AccessibilityService() {
             if (backOnChat || (inputBoxNode(preview, inputTop) != null && !stillOnPickerPage(preview))) {
                 SendLog.d(
                     "相册",
-                    "不过聊天页的输入栏已经回来了、选图页那些标记也不在了 —— 图已经发出去了，不退回分享"
+                    "聊天页输入栏已回来、选图标记已消失 ⇒ 图已发出，不退回分享"
                 )
                 return AlbumOutcome.ALREADY_SENT
             }
@@ -1220,13 +1860,13 @@ class AutoSendService : AccessibilityService() {
                 SendLog.w("相册", "页面换了、又认不出是不是聊天页：既不点，也不退回分享")
                 return AlbumOutcome.UNCERTAIN
             }
-            exitAlbumPage()
+            exitAlbumPage(inputTop)
             return AlbumOutcome.FAILED
         }
         val label = titleTextOf(send)?.trim().orEmpty()
         if (!SenderPrefs.autoConfirmLastStep(this)) {
             // 用户关掉了「最后一步自动确认」：图已经选好停在预览页，让他自己点那一下。
-            SendLog.d("相册", "按设置停在最后一步：界面上有「" + label + "」，交给用户点")
+            SendLog.d("相册", "按设置停在最后一步：有「" + label + "」，交给用户点")
             return AlbumOutcome.STAGED
         }
         val ok = click(send)
@@ -1353,16 +1993,104 @@ class AutoSendService : AccessibilityService() {
         inputBox: Rect?,
         texts: Set<String> = ALBUM_ENTRY_TEXTS
     ): AccessibilityNodeInfo? {
-        val hits = nodes.mapNotNull { node ->
+        val hits = mutableListOf<AlbumHit>()
+        val tooBig = mutableListOf<String>()
+        for (node in nodes) {
             val text = titleTextOf(node)?.replace(" ", "").orEmpty()
-            if (text.isEmpty() || text !in texts) return@mapNotNull null
+            if (text.isEmpty() || text !in texts) continue
             val r = boundsOf(node)
-            if (r.width() <= 0 || r.height() <= 0) return@mapNotNull null
-            if (inputBox != null && !inPanelBand(r, inputBox)) return@mapNotNull null
-            text to node
+            if (r.width() <= 0 || r.height() <= 0) continue
+            if (inputBox != null && !inPanelBand(r, inputBox)) continue
+            // v0.2.213：聊天里的图片消息（无障碍文案也是「图片」）是又大又能点的一块；
+            // 面板图标都是小方块。尺寸这一条把它挡在门外（详见 [ALBUM_ENTRY_MAX_PX]）。
+            if (r.width() > ALBUM_ENTRY_MAX_PX || r.height() > ALBUM_ENTRY_MAX_PX) {
+                tooBig.add(text + "@" + r.flattenToString())
+                continue
+            }
+            hits.add(AlbumHit(text, node, r, hasScrollableAncestor(node)))
         }
-        if (hits.isEmpty()) return null
-        return (hits.firstOrNull { it.first == ALBUM_ENTRY_TEXT } ?: hits.first()).second
+        if (hits.isEmpty()) {
+            // 只记一行，而且限流：等面板的时候每 [ALBUM_PANEL_POLL_MS] 轮询一次，不能刷屏。
+            if (tooBig.isNotEmpty()) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastEntrySkipLogAt >= 1500L) {
+                    lastEntrySkipLogAt = now
+                    SendLog.d(
+                        "相册",
+                        "面板入口还没出现（略过 " + tooBig.size + " 个大块头，像是聊天里的图：" +
+                            tooBig.joinToString(" / ") + "）"
+                    )
+                }
+            }
+            return null
+        }
+        SendLog.d(
+            "相册",
+            "入口候选 " + hits.size + " 个：" + hits.joinToString(" / ") { it.describe() }
+        )
+        // v0.2.205 这里曾加过一票否决：「候选全在可滑动容器里」就不点 —— 实测是错的。
+        // QQ 的「+」面板本身就是个可滑动的翻页容器，面板里的图标照样带可滑动祖先，
+        // 于是真面板项被整片拒绝（用户 m14993：点了「+」却报「候选全在聊天消息列表里」）。
+        // 现在只按文案优先级挑，「在不在可滑动容器里」降级成同档次的次要判据：
+        // 聊天里图片的无障碍文案就是「图片」（见 [IGNORED_MEDIA]），优先级永远低于「照片」「相册」。
+        return hits.minWith(
+            compareBy(
+                { albumEntryRank(it.text) },
+                { if (it.inChat) 1 else 0 },
+                { it.rect.width().toLong() * it.rect.height() }
+            )
+        ).node
+    }
+
+    /**
+     * v0.2.213：等「+」面板长出来，再认出它的相册入口。
+     *
+     * 面板是画出来的：点完「+」之后它要过一会儿才进树，小窗下尤其慢（实测 2.8 秒，用户 m15649）。
+     * 等的时候只认「像面板入口」的候选（小方块、不在输入框那一排上），聊天里的大图进不来 ——
+     * 所以等不到就是真的没等到，会落回分享路线，不会瞎点。
+     */
+    private suspend fun waitAlbumEntry(
+        inputBox: Rect,
+        texts: Set<String> = ALBUM_ENTRY_TEXTS,
+        timeoutMs: Long = ALBUM_PANEL_WAIT_MS,
+        stopOnPickerPage: Boolean = false,
+        gen: Long = 0L,
+        myApp: String? = null
+    ): AccessibilityNodeInfo? {
+        var waited = 0L
+        while (true) {
+            // v0.2.218：等的过程里也看一眼这一轮还算不算数（用户又点了一次 / 已经离开应用）。
+            // 这里不写日志：调用方拿到 null 会自己再问一次 [shouldStop]，把原因记在它那边。
+            if (gen != 0L && (stale(gen) || userLeftApp(myApp))) return null
+            val nodes = collectAll()
+            albumEntryNode(nodes, inputBox, texts)?.let { return it }
+            // v0.2.216：已经站在选图页上 = 这一层不存在（QQ 的「照片」直进图库），别再等满超时。
+            if (stopOnPickerPage && stillOnPickerPage(nodes)) return null
+            if (waited >= timeoutMs) return null
+            delay(ALBUM_PANEL_POLL_MS)
+            waited += ALBUM_PANEL_POLL_MS
+        }
+    }
+
+    /**
+     * 相册入口的一个候选。注意 [inChat]（有可滑动祖先）**分不清聊天消息和面板图标**：
+     * 聊天消息在消息列表里，QQ 的「+」面板图标也在它自己的翻页容器里 —— 只能当次要判据。
+     */
+    private data class AlbumHit(
+        val text: String,
+        val node: AccessibilityNodeInfo,
+        val rect: Rect,
+        val inChat: Boolean
+    ) {
+        fun describe(): String = text + (if (inChat) "(可滑动)" else "(直连)") + "@" + rect.flattenToString()
+    }
+
+    /** 面板入口的文案优先级：微信叫「相册」，QQ 叫「照片」/「图片」，越靠前越可信。 */
+    private fun albumEntryRank(text: String): Int = when (text) {
+        "相册", "本地相册", "手机相册", "从相册选择" -> 0
+        "照片" -> 1
+        "图片" -> 2
+        else -> 3
     }
 
     /**
@@ -1370,10 +2098,21 @@ class AutoSendService : AccessibilityService() {
      * 或者**输入栏上面一个面板高度以内**。输入栏那一排自己不算，免得把「表情」「+」认成入口。
      */
     private fun inPanelBand(r: Rect, inputBox: Rect): Boolean {
-        if (inInputBarBand(r, inputBox)) return false
+        if (inInputBoxRow(r, inputBox)) return false
         if (r.top >= inputBox.bottom) return true
-        return r.bottom <= inputBox.top && r.top >= inputBox.top - ALBUM_PANEL_BAND_PX
+        return r.bottom <= inputBox.bottom && r.top >= inputBox.top - ALBUM_PANEL_BAND_PX
     }
+
+    /**
+     * 和输入框**本体重叠**的那一条（输入栏那一排自己：「表情」「+」都在这条里）。
+     *
+     * v0.2.213 之前这里用的是 [inInputBarBand]（输入框上下各放宽 0.75 个输入框高）。全屏下够用，
+     * 小窗下会把真面板整片误杀：实测输入框 y1474-1557、面板标签在 y1445，只差 29 像素，
+     * 落在那条 62 像素的余量里，于是「相册」被判成输入栏那一排、整片面板一个候选都不剩，
+     * 只剩下聊天里那条图片消息（用户 m15649）。面板本来就紧贴输入框，余量不能这么给。
+     */
+    private fun inInputBoxRow(r: Rect, inputBox: Rect): Boolean =
+        r.centerY() in inputBox.top..inputBox.bottom
 
     /**
      * 相册路线最后那一下的确认键。
@@ -1439,29 +2178,161 @@ class AutoSendService : AccessibilityService() {
             .maxByOrNull { boundsOf(it).right }
     }
 
-    /** 相册里排在最前（最上、最左）的那一格图。 */
+    /**
+     * 相册里该点的那一格。
+     *
+     * v0.2.219 换成「**先认名字**，名字认不出才按时间，都对不上就返回 null」：
+     *  · 名字 = [AlbumPublish.lastSlotName]，也就是我们刚写进相册的那个文件名。微信 / QQ 的
+     *    选图页把文件名写在每一格的无障碍文案里（用户 m17147 的日志：ImageView[Emojichan.png]、
+     *    ImageView[Screenshot_2026-10-15-19-36-14-652_tv.danmaku.bili.jpg]），这是这件事里
+     *    唯一确定的事实 —— 名字对得上，格子就是我们的。
+     *  · v0.2.218 那套「按时间挑」为什么会挑错：格子的文案就是文件名，文件名里的日期被
+     *    [cellStamp] 当成了「今天」甚至「此刻」，于是我们在几张今天的截图里挑了最靠上最左的
+     *    那一张（用户 m17147：他看到的第三张）。所以时间这条退路现在只认**真的写出了时分**、
+     *    而且跟我们写盘时刻对得上的（±[CELL_STAMP_MATCH_MIN] 分钟）。
+     *  · 两条都不中 → null。红线还是那句：宁可让用户多点一下，也不能把别人的图发出去。
+     */
     private fun firstAlbumCell(
         nodes: List<AccessibilityNodeInfo>,
-        screenWidth: Int,
-        screenHeight: Int
+        area: Rect,
+        mine: String?,
+        quiet: Boolean = false
     ): AccessibilityNodeInfo? {
-        val minSize = (screenWidth * ALBUM_CELL_MIN_RATIO).toInt()
-        val topLine = (screenHeight * 0.05f).toInt()
-        val big = nodes.filter {
+        val minSize = (area.width() * ALBUM_CELL_MIN_RATIO).toInt()
+        // 顶上的标题栏按内容区算：小窗 / 分屏时应用不占满屏，按屏高算那条线会跑到窗口外面去。
+        val topLine = area.top + (area.height() * ALBUM_CELL_TOP_RATIO).toInt()
+        // 网格那条带子里的所有节点（「拍摄」那一格也留着，只用来打日志）。
+        //   中心点必须落在内容区里：上一次点到的是图片查看器里 x=-478 那种整屏翻页的节点，
+        //   点击直接失败（用户 m14898）。
+        val band = nodes.filter {
             val r = boundsOf(it)
-            r.width() >= minSize && r.height() >= minSize && r.top > topLine && !looksLikeCameraTile(it)
+            r.width() >= minSize && r.height() >= minSize && r.top > topLine &&
+                area.contains(r.centerX(), r.centerY())
         }
+        val big = band.filter { !looksLikeCameraTile(it) }
         val images = big.filter { shortClass(it).contains("Image") }
         val pool = if (images.isNotEmpty()) images else big.filter { it.isClickable }
-        SendLog.d(
-            "相册",
-            "格子候选 " + pool.size + " 个（其中图片类 " + images.size + " 个，现场：" +
-                dumpRows(pool, foregroundPackage, 0, limit = 16) + "）"
-        )
-        return pool.minByOrNull { node ->
-            val r = boundsOf(node)
-            r.top.toLong() * 10000L + r.left.toLong()
+        if (!quiet) {
+            SendLog.d(
+                "相册",
+                "格子候选 " + pool.size + " 个（图片类 " + images.size + " 个，网格带 " + band.size + " 个）"
+            )
+            SendLog.d("相册", cellDump(band, pool, mine))
         }
+        if (!mine.isNullOrEmpty()) {
+            val named = band.filter { titleTextOf(it)?.trim() == mine }
+            val hit = named.minByOrNull { cellRank(it) }
+            if (hit != null) {
+                SendLog.d(
+                    "相册",
+                    "按名字挑格子：\"" + mine + "\"（同名节点 " + named.size + " 个）@" +
+                        boundsOf(hit).flattenToString()
+                )
+                return hit
+            }
+            if (!quiet) SendLog.d("相册", "网格带里没有叫 \"" + mine + "\" 的那一格")
+        }
+        // v0.2.220：时间要在整条网格带上找，不能只看「图片类」那一池 —— QQ 的选图页不给文件名，
+        // 时间挂在 266×266 的可点 ViewGroup 上，ImageView 子节点是空的（用户 m17283 的日志）。
+        val dated = band.mapNotNull { node ->
+            cellStamp(titleTextOf(node)?.trim().orEmpty())?.let { it to node }
+        }.filter { it.first.toLocalTime() != LocalTime.MIDNIGHT }
+        val now = LocalDateTime.now()
+        // 第一判据：跟刚给槽位刷的 DATE_TAKEN 对齐。QQ 把拍摄时间直接印在格子上，这一条不需要
+        // 「现在」—— 选图页晚开几秒、格子晚刷新一分钟都还在窗口里。
+        val written = AlbumPublish.lastStampMs()?.let {
+            LocalDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneId.systemDefault())
+        } ?: now
+        val byWritten = written?.let { w ->
+            dated.filter { absMinutes(it.first, w) <= CELL_STAMP_WRITTEN_MIN }
+                .minWithOrNull(
+                    compareBy<Pair<LocalDateTime, AccessibilityNodeInfo>>(
+                        { absMinutes(it.first, w) },
+                        { cellRank(it.second) }
+                    )
+                )
+        }
+        // 第二判据（老规矩）：跟「现在」对得上 —— 认不出名字、格子上又没写日期的靠它。
+        val byNow = dated.filter { absMinutes(it.first, now) <= CELL_STAMP_MATCH_MIN }
+            .minByOrNull { cellRank(it.second) }
+        val timed = byWritten ?: byNow
+        if (timed != null) {
+            val anchor = if (byWritten != null) written else now
+            val basis = if (byWritten != null) "对写入时刻 " else "对现在 "
+            SendLog.d(
+                "相册",
+                "按时间挑格子：" + CELL_STAMP_FMT.format(timed.first) + "（" + basis +
+                    absMinutes(timed.first, anchor) + " 分钟）@" + boundsOf(timed.second).flattenToString()
+            )
+            return timed.second
+        }
+        if (!quiet) {
+            SendLog.w(
+                "相册",
+                "认不出我们那张（名字=" + (if (mine.isNullOrEmpty()) "未知" else mine) +
+                    "；带时分的格子 " + dated.size + " 个都对不上）：这次不点"
+            )
+        }
+        return null
+    }
+
+    /** 排位：越靠上、越靠左越小（和 [firstAlbumCell] 挑第一格用的是同一个序）。 */
+    private fun cellRank(node: AccessibilityNodeInfo): Int {
+        val r = boundsOf(node)
+        return r.top.coerceAtLeast(0) * 10000 + r.left.coerceAtLeast(0)
+    }
+
+    /**
+     * v0.2.217：从格子文案里抠出拍摄时间。
+     *
+     * 微信 / QQ 的选择页把时间写在格子的无障碍文案里（「图片，今天 20:05」这种）。抠得出来，
+     * 调用方就能按时间选「最靠现在」的那一格；抠不出来返回 null，调用方退回「最上最左」。
+     */
+    private fun cellStamp(text: String): LocalDateTime? {
+        if (text.isEmpty()) return null
+        val now = LocalDateTime.now()
+        var date: LocalDate? = null
+        CELL_DATE_YMD.find(text)?.let { m ->
+            date = runCatching {
+                LocalDate.of(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
+            }.getOrNull()
+        }
+        if (date == null) {
+            CELL_DATE_MD.find(text)?.let { m ->
+                date = runCatching {
+                    LocalDate.of(now.year, m.groupValues[1].toInt(), m.groupValues[2].toInt())
+                }.getOrNull()
+            }
+        }
+        if (date == null) {
+            date = when {
+                text.contains("前天") -> now.toLocalDate().minusDays(2)
+                text.contains("昨天") -> now.toLocalDate().minusDays(1)
+                text.contains("今天") -> now.toLocalDate()
+                else -> null
+            }
+        }
+        val day = date ?: return null
+        var time = LocalTime.MIDNIGHT
+        CELL_TIME_HM.find(text)?.let { m ->
+            val h = m.groupValues[1].toInt()
+            val mi = m.groupValues[2].toInt()
+            if (h in 0..23 && mi in 0..59) time = LocalTime.of(h, mi)
+        }
+        // v0.2.220：QQ 写「16点44分」。不加这一条，QQ 每一格都会停在 00:00，被下面
+        // 「没有时分就排除」的规矩全部刷掉 —— 用户 m17283 的日志里就是「带时分的格子 0 个」。
+        if (time == LocalTime.MIDNIGHT) {
+            CELL_TIME_CN.find(text)?.let { m ->
+                val h = m.groupValues[1].toInt()
+                val mi = m.groupValues[2].ifEmpty { "0" }.toInt()
+                if (h in 0..23 && mi in 0..59) time = LocalTime.of(h, mi)
+            }
+        }
+        // v0.2.219：这里原来有个补丁 ——「只有日期、日期又是今天」就返回「此刻」。
+        //    用户 m17147 的日志证明它会伤人：格子文案其实是文件名，文件名里的日期（截图、相机
+        //    图片都带）被当成了今天，于是我们在一堆今天的截图里挑了一张点下去。现在判据是
+        //    「文案里必须真的写出时分」，读不出时分就还是 00:00，调用方会把它排除在外。
+        return LocalDateTime.of(day, time)
     }
 
     /** 「拍摄 / 拍照」那一格不是我们插进去的图，跳过。 */
@@ -1483,17 +2354,129 @@ class AutoSendService : AccessibilityService() {
         return if (loose.size == 1) loose.first() else null
     }
 
-    /** 按返回键退出当前页面（「+」面板 / 相册），别把用户留在半路上。 */
-    private suspend fun exitAlbumPage() {
+    /**
+     * 按返回键退出当前页面（「+」面板 / 相册），别把用户留在半路上。
+     *
+     * 但**聊天页还在的时候绝不能按**：那一下会把用户从他正聊着的人那里退出去
+     * （相册路线失败本来就要退回去用分享，再顺手把人踢出聊天就太难受了）。
+     * 判据和粘贴路线的 dismissPasteMenu 是同一条。
+     */
+    private suspend fun exitAlbumPage(inputMinTop: Int) {
+        if (hasInputBelow(collectAll(), inputMinTop)) {
+            SendLog.d("相册", "不按返回：聊天页还在，按了会退出当前聊天")
+            return
+        }
         performGlobalAction(GLOBAL_ACTION_BACK)
         delay(INFO_BACK_DELAY_MS)
     }
+
+    /**
+     * 最近一次读树读到多少个节点。面板顶部读不到名字时用它判断「是不是树还没长出来」。
+     */
+    private var lastReadNodeCount = 0
+
+    /** 上一次「树几乎是空的」这类诊断日志的时间，免得轮询时刷屏。 */
+    private var lastTinyTreeLogAt = 0L
+
+    /** v0.2.213：上一次记「入口候选里有大块头被略过」的时间，同 [lastTinyTreeLogAt] 一个道理。 */
+    private var lastEntrySkipLogAt = 0L
 
     /** 当前应用所有窗口的节点，拍平成一个列表。 */
     private fun collectAll(): List<AccessibilityNodeInfo> {
         val out = ArrayList<AccessibilityNodeInfo>()
         applicationRoots().forEach { collect(it, out, 0) }
+        noteTreeSize(out.size)
         return out
+    }
+
+    /**
+     * 树还没长出来的那一下（应用刚被拉起 / 窗口刚切）读到的节点只有窗口根自己，
+     * 判据会全部落空、白跑一趟 —— 所以「几乎空」就等一等重读。
+     *
+     * 只在粘贴 / 相册这两条主动路线的入口用；读标题那条是主线程上的同步读，不能在这里等。
+     */
+    private suspend fun collectAllReady(): List<AccessibilityNodeInfo> {
+        var nodes = collectAll()
+        var tries = 0
+        while (nodes.size <= TREE_READY_MIN_NODES && tries < TREE_READY_RETRIES) {
+            tries++
+            delay(TREE_READY_DELAY_MS)
+            nodes = collectAll()
+        }
+        if (tries > 0) {
+            SendLog.d(
+                "读树",
+                "等树长出来：重读 " + tries + " 次后 nodes=" + nodes.size +
+                    "（一直这么小 = 应用还在启动画面，或界面在小窗里、根节点没暴露）"
+            )
+        }
+        return nodes
+    }
+
+    /** v0.2.215：反射结果缓存（「类名#方法名」→ Method）。跑在后台线程上，用并发安全的表。 */
+    private val probeMethods = java.util.concurrent.ConcurrentHashMap<String, java.lang.reflect.Method>()
+
+    /**
+     * 反射探一个无参布尔 getter（v0.2.209 诊断用）。
+     *
+     * 「敏感数据」这几个读取接口（AccessibilityNodeInfo.isAccessibilityDataSensitive、
+     * AccessibilityEvent.isAccessibilityDataSensitive）在 android.jar 里查得到，但 api-versions.xml
+     * 里查不到落地版本 —— 直接调用有在旧系统上 NoSuchMethodError 的风险，反射拿不到就返回 null，
+     * 不让诊断本身把服务拖挂。
+     */
+    private fun probeBool(target: Any?, method: String): Boolean? = runCatching {
+        val cls = target?.javaClass ?: return null
+        // v0.2.215：同一个类的同一个方法只查一次（原来每次探测都重做一遍 getMethod）。
+        val key = cls.name + "#" + method
+        val m = probeMethods[key] ?: runCatching { cls.getMethod(method) }.getOrNull()
+            ?.also { probeMethods[key] = it }
+            ?: return null
+        m.invoke(target) as? Boolean
+    }.getOrNull()
+
+    /** 记下这次读树的规模；树几乎是空的时候顺手把窗口现场写进日志（诊断用）。 */
+    private fun noteTreeSize(count: Int) {
+        lastReadNodeCount = count
+        if (count > TREE_READY_MIN_NODES) return
+        val now = System.currentTimeMillis()
+        if (now - lastTinyTreeLogAt < 2000L) return
+        lastTinyTreeLogAt = now
+        SendLog.d("读树", "树几乎是空的（" + count + " 个节点）：" + windowDiagnostics())
+    }
+
+    /**
+     * 树几乎是空的时候，把窗口列表摊开写一行：应用是不是在小窗里、窗口根是不是空的，
+     * 一眼就能看出来（用户在微信小窗里点悬浮球那一次，日志里只有一个根节点，谁也不知道
+     * 当时到底是小窗、还是应用刚启动）。
+     */
+    private fun windowDiagnostics(): String {
+        val listed = runCatching { windows.orEmpty() }.getOrNull()
+            ?: return "（读不到窗口列表：兼容模式关着）"
+        if (listed.isEmpty()) return "（窗口列表是空的）"
+        return "触摸探索=" + touchExplorationEnabled() + "；窗口 " + listed.size + " 个：" +
+            listed.take(6).joinToString(" ｜ ") { w ->
+            val bounds = runCatching { Rect().also { w.getBoundsInScreen(it) } }.getOrNull()
+            val root = runCatching { w.root }.getOrNull()
+            val kind = if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) "APP" else "T" + w.type
+            val rootInfo = if (root == null) {
+                "null"
+            } else {
+                "有(" + runCatching { root.childCount }.getOrDefault(-1) + "子)" +
+                    " class=" + runCatching { root.className?.toString() }.getOrNull() +
+                    " desc=" + runCatching { root.contentDescription?.length }.getOrDefault(-1) +
+                    " 敏感=" + probeBool(root, "isAccessibilityDataSensitive") +
+                    " 重要=" + probeBool(root, "isImportantForAccessibility") +
+                    " 可见=" + probeBool(root, "isVisibleToUser") +
+                    " id=" + runCatching { root.viewIdResourceName }.getOrNull() +
+                    " 窗=" + runCatching { root.windowId }.getOrDefault(-1)
+            }
+            kind + ":" + (runCatching { w.root?.packageName?.toString() }.getOrNull() ?: "-") +
+                " bounds=" + (bounds?.flattenToString() ?: "?") +
+                " layer=" + runCatching { w.layer }.getOrDefault(-1) +
+                " active=" + runCatching { w.isActive }.getOrDefault(false) +
+                " focused=" + runCatching { w.isFocused }.getOrDefault(false) +
+                " root=" + rootInfo
+        }
     }
 
     /**
@@ -1502,8 +2485,9 @@ class AutoSendService : AccessibilityService() {
      * 前后两次采样必须用同一条带子，数字才可比 —— 详见 [PASTE_KEYBOARD_SLACK_RATIO]。
      */
     private fun pasteBand(box: Rect): Rect {
-        val screenHeight = resources.displayMetrics.heightPixels
-        return Rect(box).apply { top -= (screenHeight * PASTE_KEYBOARD_SLACK_RATIO).toInt() }
+        // 键盘把输入框顶上去的那段高度按内容区算：小窗下按整块屏幕的比例没有意义（用户 m14582）。
+        val areaHeight = contentArea().height()
+        return Rect(box).apply { top -= (areaHeight * PASTE_KEYBOARD_SLACK_RATIO).toInt() }
     }
 
     /**
@@ -1579,6 +2563,9 @@ class AutoSendService : AccessibilityService() {
 
     /** 当前所有窗口的摘要（类型 / 包名 / 窗口标题打码），用于诊断。 */
     private fun windowSummary(): String = runCatching {
+        // v0.2.203 起默认关掉 flagRetrieveInteractiveWindows，这时列表是空的 ——
+        // 日志里要说清楚，免得看日志的人以为「这台机器上一个窗口都没有」。
+        if (windows.orEmpty().isEmpty()) return "（没读窗口列表：兼容模式关闭）"
         windows.orEmpty().joinToString(" / ") { w ->
             val pkg = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: "-"
             val title = runCatching { w.title?.toString() }.getOrNull() ?: "-"
@@ -1599,22 +2586,92 @@ class AutoSendService : AccessibilityService() {
     }
 
     /**
+     * 判据统一要用的「内容区」：最近一次读树时那些根节点合起来占的屏幕矩形。
+     *
+     * 全屏应用下它 ≈ 整个屏幕，小窗 / 分屏下就是那个小窗口 —— 所有按比例算的判据都该用它，
+     * 而不是 resources.displayMetrics（那永远是整块屏幕，小窗下比例全错，用户 m14582 报的
+     * 「QQ / 微信小窗识别不了」就是这么来的）。由 [applicationRoots] 每次读树时顺手算好。
+     */
+    @Volatile
+    private var contentArea = Rect()
+
+    /** 内容区；还没读到过树（或量不到）时退回整块屏幕。 */
+    private fun contentArea(): Rect {
+        val area = contentArea
+        if (area.width() > 0 && area.height() > 0) return area
+        val m = resources.displayMetrics
+        return Rect(0, 0, m.widthPixels, m.heightPixels)
+    }
+
+    /** 这些根节点合起来占的屏幕矩形；一个都量不到时按整块屏幕算。 */
+    private fun unionOf(roots: List<AccessibilityNodeInfo>): Rect {
+        val out = Rect()
+        var any = false
+        for (root in roots) {
+            val b = boundsOf(root)
+            if (b.width() <= 0 || b.height() <= 0) continue
+            if (any) out.union(b) else { out.set(b); any = true }
+        }
+        if (!any) {
+            val m = resources.displayMetrics
+            out.set(0, 0, m.widthPixels, m.heightPixels)
+        }
+        return out
+    }
+
+    /**
      * 当前应用的**所有**窗口的根节点，不限窗口类型。
      * 微信会把标题栏放在单独的应用窗口里，只看一个窗口就会漏掉标题 —— 这是认错名字的主因。
-     * 长按弹出的菜单、粘贴后的预览小窗也是同一个包的别的窗口，只认 TYPE_APPLICATION 会看不到它们。
+     * 长按弹出的菜单、粘贴后的预览小窗也是同一个包的别的窗口。
+     *
+     * 三个来源合起来给：
+     *   ① 窗口列表 —— 要 flagRetrieveInteractiveWindows（默认开着；低开销模式下为空）；
+     *   ② 活动窗口根（rootInActiveWindow，包名对得上、且不是输入法 / 系统壳 / 我们自己）；
+     *   ③ 最近一次白名单换页事件带来的窗口根（爬到顶）—— 只在 ① 为空时兜底。
+     * 三者按「包名 + 位置 + 子节点数」去重：同一棵树的两个根会把节点数翻倍，而不少判据
+     * （「只允许命中一行同名」「多个疑似发送就放弃」）靠的正是节点的唯一性。
      */
     private fun applicationRoots(): List<AccessibilityNodeInfo> {
         val out = ArrayList<AccessibilityNodeInfo>()
+        val seen = HashSet<String>()
         val wanted = foregroundPackage
-        runCatching {
-            for (w in windows.orEmpty()) {
-                val root = runCatching { w.root }.getOrNull() ?: continue
-                val pkg = runCatching { root.packageName?.toString() }.getOrNull()
-                if (wanted != null && pkg != wanted) continue
-                out.add(root)
+        fun add(node: AccessibilityNodeInfo?) {
+            val root = node ?: return
+            val pkg = runCatching { root.packageName?.toString() }.getOrNull()
+            // 我们自己的悬浮球 / 面板：永远不算「当前界面」，否则可读区域会被压成球那么大。
+            if (pkg == packageName) return
+            if (wanted != null && pkg != wanted) return
+            val b = boundsOf(root)
+            val key = pkg + "/" + b.left + "," + b.top + "," + b.right + "," + b.bottom + "/" +
+                runCatching { root.childCount }.getOrDefault(-1)
+            if (!seen.add(key)) return
+            out.add(root)
+        }
+        val listed = runCatching { windows.orEmpty() }.getOrDefault(emptyList())
+        listed.forEach { w -> add(runCatching { w.root }.getOrNull()) }
+        add(activeRoot())
+        // 事件源那条只是「读不到窗口列表」时的兜底：否则判据会看到两份同名节点，
+        // 而「只允许命中一行」「多个疑似发送就放弃」靠的正是唯一性。
+        if (wanted != null) {
+            val shellLike = out.sumOf { runCatching { it.childCount }.getOrDefault(0) } == 0
+            if (listed.isEmpty() || shellLike) {
+                val src = freshWhitelistRoot()
+                if (shellLike) {
+                    // v0.2.210：窗口列表不是空的，但每个根都是空壳（微信就是这种：窗口在、
+                    // 根 0 子节点、class=null）。窗口这条路已经废了，事件源是最后一条线索 ——
+                    // 事件是应用自己发出来的，它的 source 有时还摸得到真节点。
+                    SendLog.d(
+                        "读树",
+                        "窗口根全是空壳（" + out.size + " 个根，子节点合计 0），试事件源：class=" +
+                            runCatching { src?.className?.toString() }.getOrNull() +
+                            " 子=" + runCatching { src?.childCount }.getOrDefault(-1) +
+                            " 文本=" + SendLog.mask(runCatching { src?.text?.toString() }.getOrNull())
+                    )
+                }
+                add(src)
             }
         }
-        if (out.isEmpty()) activeRoot()?.let { out.add(it) }
+        contentArea = unionOf(out)
         return out
     }
 
@@ -1632,16 +2689,19 @@ class AutoSendService : AccessibilityService() {
      */
     private fun pickTitle(
         nodes: List<AccessibilityNodeInfo>,
-        titleZone: Int,
-        screenWidth: Int
+        zoneTop: Int,
+        zoneBottom: Int,
+        maxCenterX: Int
     ): String? =
         nodes
             .mapNotNull { node ->
                 val text = titleTextOf(node) ?: return@mapNotNull null
                 if (!looksLikeName(text)) return@mapNotNull null
                 val r = boundsOf(node)
-                if (r.width() <= 0 || r.height() <= 0 || r.top !in 0 until titleZone) return@mapNotNull null
-                if (r.centerX() > screenWidth * TITLE_MAX_CENTER_RATIO) return@mapNotNull null
+                if (r.width() <= 0 || r.height() <= 0 || r.top < zoneTop || r.top >= zoneBottom) {
+                    return@mapNotNull null
+                }
+                if (r.centerX() > maxCenterX) return@mapNotNull null
                 // 消息列表里的气泡与时间标签绝不能当名字（emc-1-017）：
                 // 它们在可滑动容器里，真正的标题栏不是。
                 if (hasScrollableAncestor(node)) return@mapNotNull null
@@ -1668,16 +2728,17 @@ class AutoSendService : AccessibilityService() {
      *
      * 微信聊天页**不暴露标题**（标题区只有「…」按钮和消息气泡），
      * 但每条消息的头像都带着「昵称头像」这样的无障碍文案 ——
-     * 对端头像永远在屏幕左半边，自己头像在右半边，所以左边那个名字就是聊天对象。
+     * 对端头像永远在内容区左半边，自己头像在右半边，所以左边那个名字就是聊天对象
+     * （小窗 / 分屏下就是那个小窗口的左半边）。
      * 出现多个不同名字（群聊）或一个都没有（对端还没发过消息）时，一律认输，让用户自己选。
      */
     private fun partnerNameFromAvatars(
         nodes: List<AccessibilityNodeInfo>,
-        screenWidth: Int
+        area: Rect
     ): String? {
         val found = LinkedHashSet<String>()
         for (node in nodes) {
-            val name = avatarNameOf(node, screenWidth) ?: continue
+            val name = avatarNameOf(node, area) ?: continue
             found.add(name)
         }
         if (found.size > 1) {
@@ -1695,13 +2756,13 @@ class AutoSendService : AccessibilityService() {
         return name
     }
 
-    /** 头像节点 → 昵称；不是左半屏的头像就返回 null。 */
-    private fun avatarNameOf(node: AccessibilityNodeInfo, screenWidth: Int): String? {
+    /** 头像节点 → 昵称；不是内容区左半边的头像就返回 null。 */
+    private fun avatarNameOf(node: AccessibilityNodeInfo, area: Rect): String? {
         val desc = node.contentDescription?.toString()?.trim().orEmpty()
         if (desc.length <= AVATAR_SUFFIX.length || !desc.endsWith(AVATAR_SUFFIX)) return null
         val r = boundsOf(node)
         if (r.width() <= 0 || r.height() <= 0) return null
-        if (r.centerX() > screenWidth * 0.5f) return null
+        if (r.centerX() > area.centerX()) return null
         val name = desc.substring(0, desc.length - AVATAR_SUFFIX.length).trim()
         return name.takeIf { looksLikeName(it) }
     }
@@ -1730,13 +2791,13 @@ class AutoSendService : AccessibilityService() {
     }
 
     /** 认不出来时，把屏上所有头像摊开写日志。 */
-    private fun avatarCensus(nodes: List<AccessibilityNodeInfo>, screenWidth: Int): String {
+    private fun avatarCensus(nodes: List<AccessibilityNodeInfo>, area: Rect): String {
         val items = nodes.mapNotNull { node ->
             val desc = node.contentDescription?.toString()?.trim().orEmpty()
             if (desc.length <= AVATAR_SUFFIX.length || !desc.endsWith(AVATAR_SUFFIX)) return@mapNotNull null
             val r = boundsOf(node)
             if (r.width() <= 0 || r.height() <= 0) return@mapNotNull null
-            val side = if (r.centerX() > screenWidth * 0.5f) "右" else "左"
+            val side = if (r.centerX() > area.centerX()) "右" else "左"
             SendLog.mask(desc) + "@" + side + r.top
         }
         return if (items.isEmpty()) "无" else items.take(8).joinToString(" / ")
@@ -1757,7 +2818,8 @@ class AutoSendService : AccessibilityService() {
     private suspend fun doClickChatByName(
         name: String,
         timeoutMs: Long,
-        appPackage: String?
+        appPackage: String?,
+        gen: Long
     ): ChatClick {
         val target = normalizeName(name)
         if (target.isEmpty()) return ChatClick.NO_TARGET
@@ -1765,23 +2827,45 @@ class AutoSendService : AccessibilityService() {
         // 只排除屏幕最上面那条标题栏。「下半屏有没有输入框」这条判据不能用 ——
         // 微信 / QQ 的「选择聊天」页是半透明盖在聊天页上的，聊天页的输入框还在树里，
         // 用它判断只会得出「还停在聊天页」，于是永远不去点列表（v11.5 的实测日志就是这么卡住的）。
-        val rowMinTop = (resources.displayMetrics.heightPixels * ROW_MIN_TOP_RATIO).toInt()
+        // 判据按内容区算（小窗 / 分屏）。先读一次树把内容区取回来 —— 顺带也是这一轮的现场。
+        applicationRoots()
+        val area = contentArea()
+        val rowMinTop = area.top + (area.height() * ROW_MIN_TOP_RATIO).toInt()
         SendLog.d(
             "点会话",
-            "开始：目标=" + target + "，应用=" + (appPackage ?: "未知") + "，超时 " + timeoutMs + "ms"
+            "开始：目标=" + SendLog.mask(target) + " 应用=" + (appPackage ?: "未知") + " 超时=" + timeoutMs + "ms"
         )
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         var round = 0
         var lastSummary = ""
+        // v0.2.218：见过「选择聊天」页没有。见过之后它又没了 = 用户自己退出了这一页
+        // （按返回 / 点「取消」），这一轮就该停 —— 原来会一路空转到超时，再弹一句
+        // 「未自动选中「X」，请在列表中选择」，可用户根本没在列表里
+        // （用户 m16984：「第一次没发出去手动退出了当流程没结束」）。
+        var pickerSeen = false
 
         while (SystemClock.uptimeMillis() < deadline) {
             round++
+            // 每一轮都问一次这一轮还算不算数：用户又点了一次表情，或者已经退出聊天应用。
+            if (shouldStop(gen, appPackage, "点会话")) return ChatClick.CANCELLED
             val roots = applicationRoots()
             if (roots.isEmpty()) {
                 if (round == 1) SendLog.w("点会话", "第 1 轮：拿不到根节点")
             } else {
                 val nodes = ArrayList<AccessibilityNodeInfo>()
                 roots.forEach { collect(it, nodes, 0) }
+
+                // 「选择聊天」页上有「取消」这个按钮；这一页消失之后它就不在了。
+                val hasCancel = nodes.any { titleTextOf(it)?.trim() == PICKER_CANCEL_TEXT }
+                if (hasCancel) {
+                    pickerSeen = true
+                } else if (pickerSeen) {
+                    SendLog.d(
+                        "点会话",
+                        "第 " + round + " 轮：「选择聊天」页已经没了 —— 用户自己退出了，这一轮到此为止"
+                    )
+                    return ChatClick.CANCELLED
+                }
 
                 // 用户自己点了人（或微信自己跳到确认框）时会弹「发送给：X」——
                 // 这时只管把「发送」点掉，绝不能再在对话框上找名字，否则会点到图片预览之类的东西。
@@ -1792,14 +2876,14 @@ class AutoSendService : AccessibilityService() {
                         // 用户关掉了「最后一步自动确认」：走到这儿就撒手，让他自己点那一下。
                         SendLog.d(
                             "点会话",
-                            "第 " + round + " 轮：看到确认框（按钮「" + label + "」），按设置交给你自己点"
+                            "第 " + round + " 轮：看到确认框（按钮 \"" + label + "\"），按设置交给用户点"
                         )
                         return ChatClick.DEFERRED
                     }
                     val ok = click(confirmSend)
                     SendLog.d(
                         "点会话",
-                        "第 " + round + " 轮：看到确认框，点「" + label + "」" + (if (ok) "成功" else "失败")
+                        "第 " + round + " 轮：看到确认框，点 \"" + label + "\" ok=" + ok
                     )
                     return if (ok) ChatClick.CLICKED else ChatClick.NO_TARGET
                 }
@@ -1811,7 +2895,7 @@ class AutoSendService : AccessibilityService() {
                 if (rows.size > 1) {
                     SendLog.d(
                         "点会话",
-                        "第 " + round + " 轮命中 " + rows.size + " 行（重名），放弃。各行：" +
+                        "第 " + round + " 轮命中 " + rows.size + " 行同名，放弃 各行：" +
                             rows.joinToString(" / ") { node ->
                                 val b = boundsOf(node)
                                 "@" + b.left + "," + b.top + "-" + b.right + "," + b.bottom +
@@ -1825,8 +2909,7 @@ class AutoSendService : AccessibilityService() {
                     val ok = click(rows.first())
                     SendLog.d(
                         "点会话",
-                        "第 " + round + " 轮命中 1 行 @" + r.left + "," + r.top + "，点击" +
-                            (if (ok) "成功" else "失败")
+                        "第 " + round + " 轮命中 1 行 @" + r.left + "," + r.top + " 点击 ok=" + ok
                     )
                     if (ok) {
                         clickConfirmIfDialog()
@@ -1852,7 +2935,7 @@ class AutoSendService : AccessibilityService() {
             }
             delay(POLL_INTERVAL_MS)
         }
-        SendLog.e("点会话", "超时未点到：" + target)
+        SendLog.e("点会话", "超时未点到：" + SendLog.mask(target))
         return ChatClick.NO_TARGET
     }
 
@@ -1867,7 +2950,8 @@ class AutoSendService : AccessibilityService() {
         if (roots.isEmpty()) return false
         val nodes = ArrayList<AccessibilityNodeInfo>()
         roots.forEach { collect(it, nodes, 0) }
-        val minTop = (resources.displayMetrics.heightPixels * ROW_MIN_TOP_RATIO).toInt()
+        val area = contentArea()
+        val minTop = area.top + (area.height() * ROW_MIN_TOP_RATIO).toInt()
         val sendNode = confirmDialogSendNode(nodes, minTop)
         if (sendNode == null) {
             SendLog.w("点会话", "复查：界面上没有「发送给」确认框，不再动手")
@@ -1880,7 +2964,7 @@ class AutoSendService : AccessibilityService() {
         val ok = click(sendNode)
         SendLog.d(
             "点会话",
-            "复查：看到确认框，点「" + titleTextOf(sendNode)?.trim() + "」" + (if (ok) "成功" else "失败")
+            "复查：看到确认框，点 \"" + titleTextOf(sendNode)?.trim() + "\" ok=" + ok
         )
         return ok
     }
@@ -1894,8 +2978,7 @@ class AutoSendService : AccessibilityService() {
         nodes: List<AccessibilityNodeInfo>,
         minTop: Int
     ): AccessibilityNodeInfo? {
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
+        val area = contentArea()
         var send: AccessibilityNodeInfo? = null
         var cancel: AccessibilityNodeInfo? = null
         var marker = false
@@ -1914,31 +2997,33 @@ class AutoSendService : AccessibilityService() {
         // ② 「发送」与「取消」成对并排，且这对按钮不在屏幕最底部那条输入栏带子里 ——
         //    聊天页输入框旁边那个「发送」永远贴着底部，而且它旁边没有「取消」。
         val sameRow = other != null &&
-            alongside(buttons, boundsOf(other), screenWidth, screenHeight) &&
-            !inInputBar(buttons, screenHeight)
+            alongside(buttons, boundsOf(other), area) &&
+            !inInputBar(buttons, area)
         if (sameRow) return target
-        // ③ 只有成对按钮凑不齐时，才允许单靠「发送给：X」标题 + 按钮浮在屏幕中段来判断。
-        if (marker && inDialogZone(buttons, screenHeight)) return target
+        // ③ 只有成对按钮凑不齐时，才允许单靠「发送给：X」标题 + 按钮浮在内容区中段来判断。
+        if (marker && inDialogZone(buttons, area)) return target
         return null
     }
 
     /** 聊天页输入栏那条带子：这上面的「发送」绝不能点。 */
-    private fun inInputBar(r: Rect, screenHeight: Int): Boolean =
-        r.centerY() > screenHeight * INPUT_BAR_GUARD_RATIO
+    private fun inInputBar(r: Rect, area: Rect): Boolean =
+        r.centerY() > area.top + area.height() * INPUT_BAR_GUARD_RATIO
 
-    /** 确认框浮在屏幕中段，不会贴着任何一条边。 */
-    private fun inDialogZone(r: Rect, screenHeight: Int): Boolean {
+    /** 确认框浮在内容区中段，不会贴着任何一条边。 */
+    private fun inDialogZone(r: Rect, area: Rect): Boolean {
         val centerY = r.centerY()
-        return centerY > screenHeight * 0.12f && centerY < screenHeight * (INPUT_BAR_GUARD_RATIO - 0.02f)
+        val top = area.top + area.height() * 0.12f
+        val bottom = area.top + area.height() * (INPUT_BAR_GUARD_RATIO - 0.02f)
+        return centerY > top && centerY < bottom
     }
 
     /**
      * 两个按钮是不是并排在一起（确认框里「发送」和「取消」总是挨着）。
-     * 阈值必须按屏幕比例算：老实现写死 1100px，在 720/1080px 屏上恒为真，等于没有判据（emc-0-005）。
+     * 阈值必须按内容区比例算：老实现写死 1100px，在 720/1080px 屏上恒为真，等于没有判据（emc-0-005）。
      */
-    private fun alongside(a: Rect, b: Rect, screenWidth: Int, screenHeight: Int): Boolean =
-        Math.abs(a.centerY() - b.centerY()) < screenHeight * 0.05f &&
-            Math.abs(a.centerX() - b.centerX()) < screenWidth * 0.6f
+    private fun alongside(a: Rect, b: Rect, area: Rect): Boolean =
+        Math.abs(a.centerY() - b.centerY()) < area.height() * 0.05f &&
+            Math.abs(a.centerX() - b.centerX()) < area.width() * 0.6f
 
     /**
      * 点完复查一次：那一行还在不在。
@@ -1971,6 +3056,7 @@ class AutoSendService : AccessibilityService() {
         appPackage: String?,
         minTop: Int,
         raw: Boolean = false,
+        bounds: Boolean = true,
         limit: Int = 8
     ): String {
         val items = nodes
@@ -1984,7 +3070,9 @@ class AutoSendService : AccessibilityService() {
                 val r = boundsOf(node)
                 if (r.width() <= 0 || r.height() <= 0 || r.top < minTop) return@mapNotNull null
                 val shown = if (raw && !hasScrollableAncestor(node)) text else SendLog.mask(text)
-                r.top to (shown + "@" + r.top + "[" + r.left + "-" + r.right + "]")
+                // v0.2.220：[bounds] 为假时只留文案 —— 面板现场看的是「有没有这一项」，坐标没用。
+                val at = if (bounds) "@" + r.top + "[" + r.left + "-" + r.right + "]" else ""
+                r.top to (shown + at)
             }
             .sortedBy { it.first }
             .take(limit)
@@ -2109,6 +3197,19 @@ class AutoSendService : AccessibilityService() {
                 Character.getType(c) == Character.FORMAT.toInt() ||
                 c.code == 0x3164 || c.code == 0xFFA0 || c.code == 0x2800 || c.code == 0xFFFC
         }
+
+    /**
+     * v0.2.217：点一下节点，并且报告走了哪条路（action = 无障碍点击，gesture = 按坐标的手势）。
+     *
+     * 相册路线要分清「点了、应用没理」和「压根没点出去」—— [click] 两种都返回 true，
+     * 出了事日志里看不出来（用户 m16723 那三次点「+」就是这样）。
+     */
+    private fun clickVia(node: AccessibilityNodeInfo): String? {
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return "action"
+        val r = boundsOf(node)
+        if (r.width() <= 0 || r.height() <= 0) return null
+        return if (gestureAt(r.exactCenterX(), r.exactCenterY(), TAP_MS, "节点坐标点击")) "gesture" else null
+    }
 
     private fun click(node: AccessibilityNodeInfo): Boolean {
         if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true

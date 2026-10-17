@@ -59,6 +59,17 @@ object AlbumPublish {
     private const val PREFS = "album_publish"
     private const val KEY_SLOT_PREFIX = "slot_uri_"
 
+    /**
+     * 「有一次写入还没收尾」的标志（v0.2.203）。
+     *
+     * [onStart] 以前每次进程启动都要问一遍 MediaStore（查槽位、查 IS_PENDING、数旧临时图），
+     * 而它真正要救的场景只有一个：上一次写槽位写到一半进程没了，那行会一直标着 IS_PENDING=1
+     * 且 SIZE=0，在相册里看不见。这种场景只可能发生在「我们确实正在写」的时候，所以：写入前后
+     * 记一笔标志，启动时标志是脏的才去查 —— 干净的启动一次查询都不发。默认按脏处理（没记过
+     * 标志的机器先查一次），宁可多查一次，也不能漏掉一个卡住的槽位。
+     */
+    private const val KEY_WRITING = "slot_write_in_flight"
+
     /** 一次最多试几条候选，防止目录里积了一堆旧行时反复空转。 */
     private const val MAX_CANDIDATES = 4
 
@@ -83,6 +94,52 @@ object AlbumPublish {
     fun lastSlot(): Uri? = slotUri
 
     /**
+     * v0.2.219：最近一次写进相册的那个文件名（含扩展名），例如 Emojichan.gif。
+     *
+     * 微信选图页里每一格的无障碍文案就是文件名（用户 m17147 的日志证实），所以挑格子时
+     * 靠这个名字认「我们刚写进去的那一张」，不再靠时间排序去猜。
+     */
+    @Volatile
+    private var lastName: String? = null
+
+    /** 见 [lastName]：选图页里该点哪一格就认这个名字。 */
+    fun lastSlotName(): String? = lastName
+
+    /**
+     * v0.2.220：这次写盘时给槽位刷的 DATE_TAKEN（毫秒）。
+     *
+     * QQ 的选图页不给文件名 —— 格子的无障碍文案是「照片  拍摄时间: 2026年10月17日 16点44分」，
+     * 名字认不出来（用户 m17283 的日志）。能跟这个时间对上的那一格，才是我们刚写进去的那张。
+     */
+    @Volatile
+    private var lastStamp: Long = 0L
+
+    /** 见 [lastStamp]：刚写进相册的那张图，系统记下的拍摄时间。 */
+    fun lastStampMs(): Long? = lastStamp.takeIf { it > 0L }
+
+    // 写入标志用 commit()：apply() 是异步落盘，进程正好在这时候被杀就丢了标志，
+    // 而那正是需要它的时刻（emc 里这条数据的全部意义就在「进程突然没了」）。
+    private fun markWriting(context: Context) {
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_WRITING, true).commit()
+        }
+    }
+
+    private fun clearWriting(context: Context) {
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_WRITING, false).commit()
+        }
+    }
+
+    /** 上一次写入有没有收尾；没记过标志时按脏处理（保守）。 */
+    private fun isWritingOrUnknown(context: Context): Boolean =
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_WRITING, true)
+        }.getOrDefault(true)
+
+    /**
      * 把 [sourcePath] 写进槽位，返回槽位 uri；出错返回 null（调用方退回别的路线）。
      * 「记住的那条 → 目录里的其它旧槽位 → 新插一条」依次试，整个过程不删任何东西。
      */
@@ -99,19 +156,22 @@ object AlbumPublish {
         val actualMime = resolveMime(mime, source.name)
         val ext = extensionOf(actualMime)
         val displayName = SLOT_NAME + ext
-        return runCatching {
+        lastStamp = 0L
+        markWriting(context)
+        val attempt = runCatching {
             val candidates = candidates(context, ext)
             candidates.forEachIndexed { index, slot ->
                 val written = tryWrite(context, slot.uri, source, actualMime, displayName)
                 if (written != null && written > 0L) {
                     slotUri = slot.uri
+                    lastName = displayName
                     remember(context, slot.uri, ext)
                     SendLog.d(
                         "相册",
-                        (if (index == 0) "复用槽位 " else "用第 " + (index + 1) + " 条候选槽位 ") +
+                        (if (index == 0) "复用槽位 " else "候选槽位 #" + (index + 1) + " ") +
                             displayName + " → " + slot.uri
                     )
-                    SendLog.d("相册", "槽位已覆盖：" + written + " 字节，" + actualMime)
+                    SendLog.d("相册", "槽位已覆盖 " + written + "B " + actualMime)
                     return@runCatching slot.uri
                 }
                 SendLog.d(
@@ -137,10 +197,13 @@ object AlbumPublish {
                 return@runCatching null
             }
             slotUri = fresh
+            lastName = displayName
             remember(context, fresh, ext)
-            SendLog.d("相册", "新槽位已写入：" + written + " 字节，" + actualMime)
+            SendLog.d("相册", "新槽位已写入 " + written + "B " + actualMime)
             fresh
-        }.getOrElse { e ->
+        }
+        clearWriting(context)
+        return attempt.getOrElse { e ->
             SendLog.e("相册", "放进相册出错：" + e.javaClass.simpleName + "：" + (e.message?.take(80) ?: ""))
             null
         }
@@ -162,12 +225,20 @@ object AlbumPublish {
             ?: return Check(Verdict.UNKNOWN, "槽位 id 读不出来")
         val inDir = countInDir(context)
         val dirTop = newestInDir(context)
+        // v0.2.219：把同目录的行连 id 一起列出来（槽位那条打 *我们）。用户 m17147 那次选图页里
+        // 摆着 Emojichan.png / Emojichan.jpg 两格，而我们刚写进去的是 Emojichan.gif —— 到底是
+        // 「同一条行、只是应用记着旧名字」还是「目录里真的躺着好几条旧行」，就靠这一行数据分清。
+        val sameDir = slotsInDir(context).take(6).joinToString(" / ") { slot ->
+            val id = slot.uri.lastPathSegment ?: "?"
+            id + ":" + slot.name + (if (id.toLongOrNull() == slotId) "*我们" else "")
+        }
         val byAdded = newest(context, MediaStore.Images.Media.DATE_ADDED)
         val byTaken = newest(context, MediaStore.Images.Media.DATE_TAKEN)
         val read = readPermission(context)
         val shape = "目录内 " + inDir + " 张（组内第一张=" + (dirTop?.describe(slotId) ?: "查不到") + "）" +
             "；按加入时间第一张=" + (byAdded?.describe(slotId) ?: "查不到") +
-            "；按拍摄时间第一张=" + (byTaken?.describe(slotId) ?: "查不到")
+            "；按拍摄时间第一张=" + (byTaken?.describe(slotId) ?: "查不到") +
+            "；同目录行 " + (if (sameDir.isEmpty()) "无" else sameDir)
         if (!read) {
             return Check(
                 Verdict.UNKNOWN,
@@ -187,6 +258,11 @@ object AlbumPublish {
      */
     fun onStart(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        // 上次写入收尾了，就没有「写了一半的槽位」可言：这一趟一次 MediaStore 查询都不发。
+        if (!isWritingOrUnknown(context)) {
+            SendLog.d("相册", "上次写入正常收尾，跳过启动自检")
+            return
+        }
         runCatching {
             // 走整个目录（不分类型）：上一次写坏的可能是任何一种槽位。
             for (slot in slotsInDir(context)) {
@@ -197,7 +273,7 @@ object AlbumPublish {
                         ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
                         "恢复上次没写完的槽位"
                     )
-                    SendLog.d("相册", "上次写到一半的槽位已放出来（" + stuck + " 字节，改 " + rows + " 行）")
+                    SendLog.d("相册", "上次写到一半的槽位已放出来 " + stuck + "B rows=" + rows)
                 }
             }
             val legacy = countLegacy(context)
@@ -326,8 +402,9 @@ object AlbumPublish {
             },
             "刷新时间列"
         )
-        SendLog.d("相册", "写完刷新元数据：改到 " + (rows ?: -1) + " 行（DATE_TAKEN=" + now + "）")
+        SendLog.d("相册", "写完刷新元数据 rows=" + (rows ?: -1) + " DATE_TAKEN=" + now)
         if (rows == null) return null
+        lastStamp = now
         logShape(context, uri, displayName, mime)
         return written
     }
@@ -361,9 +438,9 @@ object AlbumPublish {
                 }
             } ?: "查不到这一行"
         }.getOrDefault("读不出来")
-        SendLog.d("相册", "写完回读：" + shape + "（期望 " + expectedName + " / " + expectedMime + "）")
+        SendLog.d("相册", "写完回读 " + shape + " 期望 " + expectedName + " / " + expectedMime)
         if (!shape.contains("name=" + expectedName + " ")) {
-            SendLog.w("相册", "这行的名字不是我们要的（期望 " + expectedName + "）：下回别再往它里面写别的类型")
+            SendLog.w("相册", "这行的名字不是我们要的（期望 " + expectedName + "）")
         }
     }
 
@@ -381,7 +458,7 @@ object AlbumPublish {
                 )
             }
             .getOrDefault(0)
-        SendLog.d("相册", "撤掉半成品槽位：" + removed + " 行")
+        SendLog.d("相册", "撤掉半成品槽位 rows=" + removed)
         if (removed <= 0) hide(context, uri)
     }
 

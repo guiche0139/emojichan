@@ -20,6 +20,17 @@ import java.util.concurrent.TimeUnit
  *
  * 写入走单线程队列，不占主线程；内存里只留最近 MAX_LINES 条，
  * 文件超过 MAX_FILE_BYTES 就砍掉前一半，避免无限长。
+ *
+ * 文案规范（v0.2.216 起，改日志时照这个来）：
+ * 1. 一行一事：`[标签] 事件 键=值 键=值`；分隔用空格，不再用「，」串一长句。
+ * 2. 键名、单位、布尔值一律 ASCII：pkg= / nodes= / wins= / bounds= / ms= / B / ok=true / auto=on。
+ *    中文只用来写「人也要读懂的那部分事实」。
+ * 3. 中性陈述：只写看到了什么、据此判成什么。不写「顺手」「多半」「交给你」这类评价和嘱咐。
+ *    失败要写清原因，不写建议（给用户的操作指引除外，那类必须留）。
+ * 4. 不重复上下文：标签里已有的词不写；每次运行都一样的常态（服务已连接）只在异常时写。
+ * 5. 应用文案一律过 mask()；坐标用 flattenToString()，保持可 grep。
+ * 6. 正文保持中文：整包日志正文全译成英文只省约 25% 字节（中文 3 字节/字，但英文写同一件事
+ *    要 2 倍多的字符），而读者和文档都在用中文。真正省地方的是键名 ASCII 化 + 去掉重复上下文。
  */
 object SendLog {
 
@@ -67,18 +78,28 @@ object SendLog {
             if (file == target) return
             file = target
             lastErrorSave = 0L
-            // 把上一次运行留下的日志尾巴读回来，一次导出就能看到全过程。
-            runCatching {
-                if (target.exists()) {
-                    lines.clear()
-                    lines.addAll(target.readLines().takeLast(MAX_LINES))
+            // v0.2.215（性能 T1-7）：这一段原来是同步做完的 —— 把上一次运行的日志尾巴读回来
+            // （最多 512KB，一次真实的读磁盘）再问包管理器要版本号。冷启动时 MainActivity 会调
+            // init()，这一步就压在调用线程上。现在整段丢给写入线程：磁盘读和读包名都不在主线程排队。
+            writer.execute {
+                val restored = runCatching { target.readLines().takeLast(MAX_LINES) }
+                    .getOrDefault(emptyList())
+                synchronized(lock) {
+                    // 期间可能已经有新行写进来，拼在还原的历史之后、按上限裁掉最旧的，别被 clear 冲掉。
+                    if (restored.isNotEmpty()) {
+                        val fresh = lines.toList()
+                        lines.clear()
+                        lines.addAll(restored)
+                        lines.addAll(fresh)
+                        while (lines.size > MAX_LINES) lines.removeFirst()
+                    }
                 }
+                // 日志第一行写清版本，出问题时光看日志就能确认对应哪一次构建。
+                val version = runCatching {
+                    app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "?"
+                }.getOrDefault("?")
+                write(Level.INFO, "版本", "应用启动，版本 v" + version)
             }
-            // 日志第一行写清版本，出问题时光看日志就能确认对应哪一次构建。
-            val version = runCatching {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-            }.getOrDefault("?")
-            write(Level.INFO, "版本", "应用启动，版本 v" + version)
         }
     }
 
@@ -118,9 +139,9 @@ object SendLog {
      * 但读不出这个名字到底是什么，也不泄露首字。
      */
     fun mask(text: String?): String {
-        if (text.isNullOrEmpty()) return "（空）"
+        if (text.isNullOrEmpty()) return "(空)"
         val fingerprint = Integer.toHexString(text.hashCode())
-        return "＊" + fingerprint + "（" + text.length + " 字）"
+        return "＊" + fingerprint + "(" + text.length + "字)"
     }
 
     private fun append(target: File, line: String) {

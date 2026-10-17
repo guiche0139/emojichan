@@ -62,7 +62,7 @@ object EmojiShare {
             SendLog.d("分享", "图片文件不在了：" + emoji.filePath)
             return Result.FileMissing
         }
-        SendLog.d("分享", "开始分享：" + file.name + "，fileType=" + emoji.fileType)
+        SendLog.d("分享", "开始分享 " + file.name + " fileType=" + emoji.fileType)
 
         val uri = try {
             FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
@@ -86,7 +86,12 @@ object EmojiShare {
         // 「后台启动 Activity」的限制。
         val errors = mutableListOf<String>()
 
-        if (appPackage != null) {
+        // 只有微信 / QQ 才允许「直连当前前台应用」：这两家的分享页是照着实测一点点写出来的，
+        // 用户点了球就是要发给它。换成别的应用就一律交给系统分享面板 —— 直连等于替用户在
+        // 对方的分享页里做了选择，而每个 App 自己的默认项是什么我们并不知道：抖音同时有
+        // 「发送给朋友」和「发布到作品」，ACTION_SEND 直连会固定落到后者（用户 m14582 实测），
+        // 那是把表情公开发出去，代价比多点一下大得多。
+        if (appPackage != null && appPackage in DIRECT_TARGETS) {
             for (type in types) {
                 for (target in shareTargets(context, appPackage)) {
                     val intent = buildSendIntent(uri, type).apply {
@@ -96,7 +101,7 @@ object EmojiShare {
                     val label = target?.flattenToShortString() ?: ("只给包名 " + appPackage)
                     try {
                         context.startActivity(intent)
-                        SendLog.d("分享", "拉起成功：" + label + "（type=" + type + "）")
+                        SendLog.d("分享", "拉起成功 " + label + " type=" + type)
                         return Result.SentToApp
                     } catch (e: Exception) {
                         val reason = describe(e)
@@ -106,7 +111,14 @@ object EmojiShare {
                 }
             }
         } else {
-            SendLog.d("分享", "不知道前台是哪个应用，直接走系统分享面板")
+            SendLog.d(
+                "分享",
+                if (appPackage == null) {
+                    "不知道前台应用，走系统分享面板"
+                } else {
+                    "前台 " + appPackage + " 不是微信 / QQ，走系统分享面板，不替用户选目标"
+                }
+            )
         }
 
         // 微信没装 / 被系统拦下 —— 退回系统分享面板，把每次尝试的原因一并带回去。
@@ -162,7 +174,7 @@ object EmojiShare {
             manager.setPrimaryClip(clip)
             val desc = clip.description
             val mime = if (desc.mimeTypeCount > 0) desc.getMimeType(0) else "未知"
-            SendLog.d("剪贴板", "已放入 " + file.name + "（type=" + mime + "）")
+            SendLog.d("剪贴板", "已放入 " + file.name + " type=" + mime)
             // 取证：写进去之后马上把三处现场记下来（文件字节 / 系统剪贴板 / 接收方能取到什么），
             // 粘贴失败时一眼能看出断在哪一环。要读整个文件，所以丢到后台线程。
             ClipForensics.reportAsync(context, file, uri)
@@ -176,6 +188,9 @@ object EmojiShare {
 
     /** 剪贴板要给谁授权：装了的微信 / QQ。 */
     private val CLIP_TARGETS = listOf(WECHAT_PACKAGE, QQ_PACKAGE)
+
+    /** 允许「直连当前前台应用」的应用：只有这两家的分享页是照着实测写的。 */
+    private val DIRECT_TARGETS = setOf(WECHAT_PACKAGE, QQ_PACKAGE)
 
     /** 上一次放进剪贴板时授出去的那条 uri；粘贴结束或再次复制时要收回来（emc-1-029）。 */
     @Volatile
@@ -213,7 +228,7 @@ object EmojiShare {
         val uri = grantedUri ?: return
         val app = context.applicationContext
         handler.postDelayed({ if (grantedUri == uri) releaseClipboardGrants(app) }, delayMs)
-        SendLog.d("剪贴板", "读权限先留着，过 " + delayMs / 1000 + " 秒再收回")
+        SendLog.d("剪贴板", "读权限先留着，" + delayMs / 1000 + "s 后收回")
     }
 
     /**

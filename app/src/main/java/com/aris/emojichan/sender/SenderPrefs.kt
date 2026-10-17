@@ -133,4 +133,31 @@ object SenderPrefs {
             .putBoolean(KEY_BALL_ON, on)
             .apply()
     }
+
+    private const val KEY_A11Y_LOW_OVERHEAD = "a11y_low_overhead"
+
+    /**
+     * 「无障碍低开销模式（实验）」：读树只取「重要的」节点，且不再枚举窗口。
+     *
+     * v0.2.203 默认开了这套精简方式，真机实测（用户 m14729）：微信的粘贴路线直接掉回分享、
+     * QQ 的相册路线走到图片选择器就掉回分享。原因是那两条 flag 不是纯开销 ——
+     * FLAG_INCLUDE_NOT_IMPORTANT_VIEWS 决定树里有没有「不重要」的节点（相册格子、输入框
+     * 附近的大图正是这类），FLAG_RETRIEVE_INTERACTIVE_WINDOWS 决定能不能看见微信 / QQ 的
+     * 第二个窗口（标题栏、权限弹窗）。
+     *
+     * 所以 v0.2.204 起默认**关闭**这个模式（两条 flag 加回来 = v0.2.202 的识别方式），
+     * 开关只留给想省开销的人：打开之后相册 / 粘贴两条路线大概率失效，这是已知代价。
+     * 由无障碍服务在连接时与开关变化时用 setServiceInfo() 应用。
+     */
+    fun a11yLowOverhead(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_A11Y_LOW_OVERHEAD, false)
+
+    fun setA11yLowOverhead(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_A11Y_LOW_OVERHEAD, value)
+            .apply()
+    }
+
 }

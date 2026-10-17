@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import com.aris.emojichan.sender.AutoSendService
 import com.aris.emojichan.sender.SendLogActivity
 import com.aris.emojichan.storage.EmojiCompressor
 import com.aris.emojichan.storage.SimilarFinder
@@ -46,6 +47,11 @@ class AdvancedSettingsActivity : AppCompatActivity() {
     private lateinit var wechatImageHint: TextView
     private var syncingRouteToggle = false
     private var syncingWechatImageToggle = false
+
+    // ---- 无障碍低开销模式（v0.2.207 从主设置页搬来，用户 m15198） ----
+    private lateinit var a11yLowOverheadSwitch: MaterialSwitch
+    private lateinit var a11yLowOverheadHint: TextView
+    private var syncingA11yLowOverhead = false
 
     // ---- 大表情压缩（v0.1.408） ----
     private lateinit var compressToggle: MaterialButtonToggleGroup
@@ -92,6 +98,7 @@ class AdvancedSettingsActivity : AppCompatActivity() {
         setupCompress()
         setupSearch()
         setupRoute()
+        setupA11yLowOverhead()
         setupRecents()
     }
 
@@ -101,6 +108,7 @@ class AdvancedSettingsActivity : AppCompatActivity() {
         refreshCompress()
         refreshSearch()
         refreshHideRecents()
+        refreshA11yLowOverhead()
     }
 
     // ---------------- 表情原文件 ----------------
@@ -423,6 +431,53 @@ class AdvancedSettingsActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    // ---------------- 无障碍低开销模式（v0.2.207 从主设置页搬来，用户 m15198） ----------------
+
+    private fun setupA11yLowOverhead() {
+        a11yLowOverheadSwitch = findViewById(R.id.switchA11yLowOverhead)
+        a11yLowOverheadHint = findViewById(R.id.a11yLowOverheadHint)
+        a11yLowOverheadSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!syncingA11yLowOverhead) applyA11yLowOverhead(checked)
+        }
+        refreshA11yLowOverhead()
+    }
+
+    /**
+     * 「无障碍低开销模式（实验）」：读树只取「重要的」节点、前台判定不看窗口列表。
+     *
+     * v0.2.203 默认开了它，真机实测（用户 m14729）：微信的粘贴路线与 QQ 的相册路线直接掉回分享 ——
+     * 相册格子、「输入框附近的图片」要 FLAG_INCLUDE_NOT_IMPORTANT_VIEWS 才看得见，微信 / QQ 的
+     * 第二个窗口要 FLAG_RETRIEVE_INTERACTIVE_WINDOWS 才枚举得到。所以 v0.2.204 起默认关闭，
+     * 开关只留给想试省开销的人（打开之后相册 / 粘贴大概率失效）。
+     *
+     * 它跟「表情发送方式」是同一条线上的东西（都会让自动化路线失效），所以 v0.2.207 起
+     * 从主设置页搬到高级设置页，跟发送路线摆在同一张卡片里。
+     */
+    private fun refreshA11yLowOverhead() {
+        val on = SenderPrefs.a11yLowOverhead(this)
+        syncingA11yLowOverhead = true
+        a11yLowOverheadSwitch.isChecked = on
+        syncingA11yLowOverhead = false
+        a11yLowOverheadHint.setText(
+            if (on) R.string.settings_a11y_low_hint_on else R.string.settings_a11y_low_hint_off
+        )
+    }
+
+    private fun applyA11yLowOverhead(on: Boolean) {
+        SenderPrefs.setA11yLowOverhead(this, on)
+        a11yLowOverheadHint.setText(
+            if (on) R.string.settings_a11y_low_hint_on else R.string.settings_a11y_low_hint_off
+        )
+        // 正在跑的服务立刻重新应用 flag —— setServiceInfo() 是即时生效的，
+        // 不然用户得把无障碍服务关掉再开才看得到差别。
+        AutoSendService.refreshFlags()
+        Toast.makeText(
+            this,
+            if (on) R.string.settings_a11y_low_toast_on else R.string.settings_a11y_low_toast_off,
+            Toast.LENGTH_LONG
+        ).show()
     }
 
 }

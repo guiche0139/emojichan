@@ -37,8 +37,8 @@ android {
         // versionCode 取「阶段 × 1000 + 构建序号」，跟 versionName 对得上，装新版才能覆盖旧版；
         // 0.1.x 阶段的 versionCode 最高到 416，所以 0.2.000 从 2000 起算。
         // APK 文件名会带上 versionName。
-        versionCode = 2202
-        versionName = "0.2.202"
+        versionCode = 2220
+        versionName = "0.2.220"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,8 +56,11 @@ android {
 
     buildTypes {
         release {
-            // R8 暂时不开：本项目没有反射/动态取资源，开了大概率没问题，但没实测过就不在发布版上冒险。
-            isMinifyEnabled = false
+            // R8 从 v0.2.203 起打开（用户 m14582 批准的后台精简第 6 条：没开的时候 classes.dex
+            // 解压 10.6MB，低端机的类加载与 dexopt 都在为此买单）。
+            // 只让 R8 裁剪、不让它改名 —— 见 proguard-rules.pro 里的 -dontobfuscate：
+            // Room / Glide 都是按类名反射加载生成的实现，改名漏一条 keep 规则就是装上即崩。
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

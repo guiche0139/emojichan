@@ -169,6 +169,8 @@
     <string name="overlay_album_staged">图已选好并停在预览页，请点「发送 / 确定」</string>
     <string name="overlay_album_already_sent">可能已发送，请在聊天里确认；如未收到可重新发送</string>
     <string name="overlay_album_failed">相册方式未成功，已改用分享</string>
+    <!-- v0.2.219：相册已停在选图页，但认不出哪一格是我们刚写进去的那张 —— 页面留着让用户自己点。 -->
+    <string name="overlay_album_manual">没认出刚放进相册的那张图，请自己点一下它</string>
     <!-- 相册路线点完第一格之后页面换了、但认不出结果：不自动退回分享，免得同一张发两遍（emc-2-031） -->
     <string name="overlay_album_uncertain">这一步没看准，图可能已发出：请在聊天里确认，没收到再重发</string>
     <string name="overlay_album_check_failed">相册里排第一的不是这张表情，已改用分享（原因见发送日志）</string>
@@ -249,6 +251,12 @@
     <string name="settings_confirm_sub">流程走到确认步骤（微信为「发送」、QQ 为「确定」）时自动点击</string>
     <string name="settings_confirm_hint_on">已开启：自动点击微信的「发送」、QQ 的「确定」。</string>
     <string name="settings_confirm_hint_off">已关闭：流程停在最后一个按钮前，需自行点击。</string>
+    <string name="settings_a11y_low_title">无障碍低开销模式（实验）</string>
+    <string name="settings_a11y_low_sub">关闭时读入全部节点并枚举窗口（相册 / 粘贴路线依赖它）</string>
+    <string name="settings_a11y_low_hint_on">已开启：每次读树只取重要节点、不再枚举窗口 —— 省一点开销，但相册 / 粘贴路线会失效（实测）。</string>
+    <string name="settings_a11y_low_hint_off">已关闭（默认）：识别方式与 v0.2.202 一致，相册 / 粘贴路线正常。</string>
+    <string name="settings_a11y_low_toast_on">已开启低开销模式：相册 / 粘贴路线可能失效</string>
+    <string name="settings_a11y_low_toast_off">已关闭低开销模式：识别退回完整方式</string>
     <string name="confirm_switched_on">已开启：最后一步自动确认</string>
     <string name="confirm_switched_off">已关闭：最后一步需自行点击</string>
 

@@ -2,6 +2,9 @@
 <!--
   「表情自动发送」无障碍服务配置。
 
+  ⚠️ 改动前先读 md/无障碍核心.md：下面每一条属性都在「让系统把我们当读屏」这件事上有份量，
+  删任何一条都可能让微信 / QQ 读不到界面（相册 / 剪贴板两条路线会掉回分享）。
+
   它只做两件事，都不是持续性的：
     1. 收「换页面」事件、只看 event.packageName，判断前台是不是微信 / QQ
        —— 决定悬浮球显隐。这一步完全不读屏幕内容。
@@ -13,12 +16,49 @@
   这里只订阅 typeWindowStateChanged（一次界面切换才一条），每条只读一下
   event.packageName，不碰节点树，所以放宽到全应用的开销可以忽略。
   canPerformGestures=true 是为了在列表项本身不可点时用 dispatchGesture 兜底。
--->
+
+  v0.2.203 曾把三条 flag 去掉（用户 m14582 批准的瘦身），真机实测（用户 m14729）证明其中两条
+  是功能性的，v0.2.204 起默认加回：
+    · flagReportViewIds —— v0.2.207 起在运行时补回（见 AutoSendService.applyAccessibilityFlags）：
+      全仓库没有一处读 viewIdResourceName，本来当纯浪费去掉了，但去掉后微信的窗口读不到内容
+      （只给 class=null、0 子节点的合成根），怀疑这条 flag 还会影响系统怎么给节点树。实验性质。
+    · flagIncludeNotImportantViews —— 必须加回：它决定「每次读树有多少节点」，而相册格子、
+      「输入框附近的大图」正是「不重要」的那类节点，去掉之后相册 / 粘贴两条路线直接失效。
+    · flagRetrieveInteractiveWindows —— 必须加回：去掉之后只剩一棵活动窗口树，微信 / QQ 的
+      第二个窗口（标题栏、权限弹窗、预览小窗）都看不见，粘贴路线也会掉回分享。
+  这两条由运行时开关控制（设置页「无障碍低开销模式（实验）」，默认关），用 setServiceInfo()
+  去掉 / 加回 —— 不用重新装包就能对比，代价是那两条路线会失效（已知，实测）。
+
+  v0.2.208（用户 m15399 批准，只加这一条）：补上 android:isAccessibilityTool="true"。
+  Android 14 起应用可以把自己的无障碍数据标成「敏感」（android:accessibilityDataSensitive /
+  View#setAccessibilityDataSensitive）；标了之后只有配置里声明了 isAccessibilityTool="true" 的服务
+  能读到它的窗口内容，其他服务拿到的窗口「列得出来、active/focused 都对、root 是空的」—— 与微信
+  8.0.78 在我们日志里的样子逐字吻合（同一批日志里 QQ 与小米系统界面都读得出）。这条属性在
+  API < 33 上被忽略。另：AccessibilityServiceInfo 只有读的 isAccessibilityTool()，没有运行时
+  setter，所以只能写在这里、必须重新出包。
+
+  v0.2.209：补上 android:canRequestTouchExplorationMode="true"。
+  这条属性只是「允许本服务请求触摸探索模式」；真正打开它的是运行时 flag
+  FLAG_REQUEST_TOUCH_EXPLORATION_MODE —— 从 v0.2.214 起我们永远把它关着：常开会把整机单击
+  变成探索、要双击才点得动（用户 m15531 / m15570 两次实测「一开就操作不了手机」），而脉冲版
+  同样解不开微信的空壳根，已连同高级设置里那个开关、AutoSendService 里的脉冲代码一起删掉。
+  这条属性本身保留：它是「像读屏」的证据之一。
+
+  v0.2.211（结论保留）：feedbackType 从 feedbackGeneric 改成 feedbackSpoken|feedbackGeneric。
+  读屏（TalkBack / 小米读屏）声明的就是 spoken，而微信的控件树恰恰只对读屏交出来
+  （社区实测 issue #142：只装普通服务时 dump 是空壳、打开 TalkBack 就有完整树）—— 这是
+  「照着读屏抄声明」里最便宜、最不打扰人的一条。
+
+  v0.2.212→214 的结论：真正让微信交出控件树的是「服务组件名」（见 AndroidManifest.xml 那段
+  注释与 md/无障碍核心.md）—— 别再回头去动触摸探索。
+  -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
-    android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:accessibilityFeedbackType="feedbackSpoken|feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
     android:canPerformGestures="true"
+    android:canRequestTouchExplorationMode="true"
     android:canRetrieveWindowContent="true"
     android:description="@string/auto_send_service_description"
+    android:isAccessibilityTool="true"
     android:notificationTimeout="50" />

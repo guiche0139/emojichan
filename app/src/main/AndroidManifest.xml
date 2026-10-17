@@ -120,9 +120,19 @@
           场景感知 + 自动选中聊天对象用的无障碍服务。
           和白名单一样由系统在分发阶段过滤，平时不监听、不读屏：
           只在悬浮球被点开时读一次聊天页标题，分享后盯一小会儿「选择聊天」列表。
+
+          v0.2.212 实验：这里的名字换成了系统读屏「选择朗读」的包名 + 类名
+          （com.google.android.accessibility.selecttospeak.SelectToSpeakService，
+          实现在同名文件里，是个什么都不写、整体继承 AutoSendService 的子类）。
+          起因见那份实测文章与 issue #142：微信只把控件树交给读屏，别的服务拿到的都是空壳根。
+          换成这个名字之后，系统设置里那条勾选会掉（组件名变了）—— 装完要重新打开一次无障碍服务。
+
+          ⚠️ 改动前先读 md/无障碍核心.md：这里的组件名、那个空壳类文件、proguard 里的 keep
+          规则三者必须一致；改回普通服务名（.sender.AutoSendService）会让微信 / QQ 的相册与
+          剪贴板两条路线一起掉回分享 —— 那是 v0.2.203~211 反复卡住的地方。
         -->
         <service
-            android:name=".sender.AutoSendService"
+            android:name="com.google.android.accessibility.selecttospeak.SelectToSpeakService"
             android:exported="true"
             android:label="@string/auto_send_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

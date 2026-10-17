@@ -633,8 +633,8 @@ open class AutoSendService : AccessibilityService() {
     @Volatile
     private var imePackages: Set<String> = emptySet()
 
-    private val foregroundSettleEarly = Runnable { settleForeground() }
-    private val foregroundSettleLate = Runnable { settleForeground() }
+    private val foregroundSettleEarly = Runnable { settleForeground(late = false) }
+    private val foregroundSettleLate = Runnable { settleForeground(late = true) }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -744,9 +744,12 @@ open class AutoSendService : AccessibilityService() {
      * （windows），关掉那条 flag 之后没得问了 —— 改成问「活动窗口根是谁」，问不出来才按
      * 事件包名下结论。两次（400ms / 1400ms）都判一遍，第二次能纠正第一次的误判。
      */
-    private fun settleForeground() {
+    private fun settleForeground(late: Boolean = false) {
         if (pendingForeign == null) return
-        val guess = activePackageGuess()
+        // v0.2.221：第二次复查只回答一个问题 —— 白名单应用有没有顶到前台。
+        // 完整的 activePackageGuess 要先枚举窗口列表（每个窗口还要取一次 root），对这个问题是多余的，
+        // 一次 rootInActiveWindow 就够了。第一次复查仍走完整链路（它负责给球一个确定的前台包名）。
+        val guess = if (late) cheapPackageGuess() else activePackageGuess()
         val verdict = guess ?: pendingForeign!!
         val waited = SystemClock.uptimeMillis() - pendingForeignAt
         // 用户 m15752：非白名单应用不写日志。收口结果只在「落定到白名单」时记一行；
@@ -760,6 +763,12 @@ open class AutoSendService : AccessibilityService() {
         }
         updateForeground(if (verdict in WATCHED_PACKAGES) verdict else null)
         updateForegroundApp(verdict)
+        // v0.2.221：已经确认白名单在前台就是终局，1400ms 那次不必再问一遍（每切一次应用省一次复查）。
+        // 判成「非白名单」时不省：那正是「桌面事件先到、微信窗口后到」需要第二次纠正的情形。
+        if (guess != null && guess in WATCHED_PACKAGES) {
+            pendingForeign = null
+            clearForegroundTimers()
+        }
     }
 
     private fun clearForegroundTimers() {
@@ -964,6 +973,16 @@ open class AutoSendService : AccessibilityService() {
      */
     private fun activePackageGuess(): String? {
         activeApplicationPackage()?.takeIf { !isTransparent(it) }?.let { return it }
+        val rootPkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+        if (rootPkg != null && !isTransparent(rootPkg)) return rootPkg
+        return lastNonImePackage?.takeIf { !isTransparent(it) }
+    }
+
+    /**
+     * 轻量版 [activePackageGuess]（v0.2.221）：一次 rootInActiveWindow，失败才退回事件包名。
+     * 不碰窗口列表，所以回答不了「底下那个应用窗口是谁」—— 只给收口第二次复查用。
+     */
+    private fun cheapPackageGuess(): String? {
         val rootPkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
         if (rootPkg != null && !isTransparent(rootPkg)) return rootPkg
         return lastNonImePackage?.takeIf { !isTransparent(it) }

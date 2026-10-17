@@ -30,7 +30,7 @@ object EmojiImport {
         val baseName = fromUpstream.ifEmpty { ImageUtil.fallbackName(context) }
         if (log) {
             // 名字这块只有这里知道真相：用户再说「名字又不对」时，日志里能看到上游给了什么
-            SendLog.d("导入", "采用名=" + baseName + (if (usedFallback) "（兜底：上游没给真名）" else "（上游原名）"))
+            SendLog.d("导入", "采用名=" + baseName + (if (usedFallback) " 兜底" else " 上游原名"))
             SendLog.d("导入", ImageUtil.describeNames(context, uri))
         }
         val filePath = ImageUtil.copyImageToInternal(context, uri)

@@ -64,6 +64,23 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     fun selectedFiles(): List<EmojiFile> = files.filter { selectedIds.contains(it.id) }
 
+    /** 挂着的那个列表（算得清屏幕上有几格），没挂上或者已经摘了就退回整表通知。 */
+    private var attached: RecyclerView? = null
+
+    /** 图片解码尺寸：3 列等分宽度（扣掉网格左右各 12dp）× 网格里那块 112dp，只算一次。 */
+    private var targetW = 0
+    private var targetH = 0
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attached = recyclerView
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView)
+        attached = null
+    }
+
     fun submit(list: List<EmojiFile>) {
         files = list
         // 动图和文件已经不在的不参与压缩，之前勾上的要去掉。
@@ -128,8 +145,25 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         group.forEach { rows.add(CompressRow.Item(it)) }
     }
 
+    /**
+     * 勾选变了：只重绑屏幕上看得见的那些行（v0.2.215，性能 T1-3）。
+     *
+     * 以前是 `notifyItemRangeChanged(0, rows.size)` —— 全选 / 清空那一下等于告诉列表「每一行都脏了」，
+     * 几千张的库里几千行都过一遍。这里自己把挂着的子项重绑一遍，成本只跟屏幕上有几行有关。
+     */
     private fun notifySelectionChanged() {
-        notifyItemRangeChanged(0, rows.size)
+        val recycler = attached
+        if (recycler == null) {
+            notifyDataSetChanged()
+        } else {
+            for (i in 0 until recycler.childCount) {
+                val child = recycler.getChildAt(i)
+                val holder = recycler.getChildViewHolder(child)
+                // 位置问列表要：ViewHolder.bindingAdapterPosition 在这个 RecyclerView 版本里没有
+                val position = recycler.getChildAdapterPosition(child)
+                if (position != RecyclerView.NO_POSITION) onBindViewHolder(holder, position)
+            }
+        }
         onSelectionChanged?.invoke()
     }
 
@@ -142,6 +176,15 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     /** 段标题占满整行，格子占一格 —— 交给 [androidx.recyclerview.widget.GridLayoutManager.SpanSizeLookup]。 */
     fun spanSize(position: Int): Int =
         if (rows.getOrNull(position) is CompressRow.Section) SPAN else 1
+
+    /** 3 列等分宽度（扣掉网格左右各 12dp 的内边距）× 格子里那块 112dp。 */
+    private fun ensureTargetSize(view: View) {
+        if (targetW > 0 && targetH > 0) return
+        val dm = view.resources.displayMetrics
+        val padding = (24f * dm.density).toInt()
+        targetW = ((dm.widthPixels - padding) / SPAN).coerceAtLeast(1)
+        targetH = (112f * dm.density).toInt().coerceAtLeast(1)
+    }
 
     override fun getItemCount(): Int = rows.size
 
@@ -213,8 +256,12 @@ class CompressAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
             val exists = !file.missing && File(file.path).isFile
             if (exists) {
+                // v0.2.215（性能 T0-5）：格子尺寸是写死的，直接告诉 Glide 解码多大 ——
+                // 不必等控件测量完再解析目标尺寸，缓存键也稳定。
+                ensureTargetSize(itemView)
                 Glide.with(thumb)
                     .load(File(file.path))
+                    .override(targetW, targetH)
                     .centerCrop()
                     .into(thumb)
             } else {

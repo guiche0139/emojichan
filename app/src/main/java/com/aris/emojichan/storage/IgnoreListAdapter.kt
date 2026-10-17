@@ -84,6 +84,8 @@ class IgnoreListAdapter(private val context: Context) : BaseAdapter() {
             image.scaleType = ImageView.ScaleType.CENTER_CROP
             Glide.with(image)
                 .load(File(item.path))
+                // v0.2.215（性能 T0-5）：边长写死是 36dp，直接告诉 Glide
+                .override(side, side)
                 .transform(RoundedCorners(dp(8)))
                 .into(image)
             container.addView(image)

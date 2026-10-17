@@ -42,7 +42,13 @@ class EmojiRepository(context: Context) {
      * @return 新行的 id 列表（顺序与入参一致，失败的位置是 -1）。
      */
     suspend fun insertAll(emojis: List<EmojiEntity>, tagIds: List<Long> = emptyList()): List<Long> {
-        val ids = emojis.map { emoji -> emojiDao.importEmoji(emoji, autoTagFor(emoji.fileType)) }
+        // v0.2.215：名字查重只读一次全表（原来每条 importEmoji 内部都 getAllNames()，是 O(N²)：
+        // 导 100 张 ≈ 5000 行读取，2000 行的库再导 500 张 ≈ 50 万行）。
+        // uniqueBatch 与逐条调用 EmojiNaming.unique 的结果逐字一致 —— 批内同名也会各自唯一。
+        val names = EmojiNaming.uniqueBatch(emojis.map { it.name }, emojiDao.getAllNames())
+        val ids = emojis.mapIndexed { index, emoji ->
+            emojiDao.importEmojiWithName(emoji, names[index], autoTagFor(emoji.fileType))
+        }
         if (tagIds.isNotEmpty()) {
             val ok = ids.filter { it > 0 }
             if (ok.isNotEmpty()) emojiDao.addTagsTo(ok, tagIds)

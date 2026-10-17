@@ -31,6 +31,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 检索页哈希阶段的进度刷新间隔（v0.2.215，性能 T1-5）：每张都回主线程改进度条太浪费。 */
+private const val SCAN_PROGRESS_STEP = 50
+
 /**
  * 重复与相似检索页（v0.1.411，用户 m08893：两件事放同一页，不再先选查哪一类）。
  *
@@ -134,6 +137,8 @@ class SearchActivity : AppCompatActivity() {
         adapter.threshold = threshold
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
+        // v0.2.215：列表高度不随内容变（match_parent），声明固定省掉整体重新测量。
+        list.setHasFixedSize(true)
 
         findViewById<MaterialButton>(R.id.btnSearchDelete).setOnClickListener { askDeleteSelected() }
         ignored = SimilarPrefs.ignoredRecords(this)
@@ -169,6 +174,22 @@ class SearchActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 一阶段哈希的进度（v0.2.215，性能 T1-5）：每 [SCAN_PROGRESS_STEP] 张回来改一次进度条，
+     * 最后一张必报（不然进度条会停在倒数第几张）。回调本身在 IO 线程上，所以这里切回主线程。
+     */
+    private suspend fun reportScanProgress(
+        dialog: BusyDialog.Progress,
+        done: Int,
+        total: Int,
+        formatRes: Int
+    ) {
+        if (done % SCAN_PROGRESS_STEP != 0 && done != total) return
+        withContext(Dispatchers.Main) {
+            BusyDialog.update(this@SearchActivity, dialog, done, total, getString(formatRes, done, total))
+        }
+    }
+
     private fun scan() {
         // 懒启动：先把 job 记下来再跑，取消按钮才有东西可取消。
         val job = lifecycleScope.launch(start = CoroutineStart.LAZY) {
@@ -190,57 +211,52 @@ class SearchActivity : AppCompatActivity() {
             BusyDialog.setOnCancel(dialog) { self?.cancel() }
 
             val result = try {
-                val duplicates = DuplicateFinder.find(
-                    items = loaded,
-                    hashOf = { item ->
-                        // 刚算出来的行也算「旧行」：下一段要拿它保住这一段的摘要。
-                        val base = fresh[item.id] ?: cached[item.id]
-                        // 旧行还算不算数由 FeatureCache 判断：体积 + 修改时间都对上才复用摘要。
-                        FeatureCache.sha256Of(base, item)
-                            ?: withContext(Dispatchers.IO) { FileHash.sha256(File(item.path)) }
-                                ?.also { hash ->
-                                    fresh[item.id] = FeatureCache.merged(item, base, sha256 = hash)
-                                }
-                    },
-                    onProgress = { done, total ->
-                        BusyDialog.update(
-                            this@SearchActivity,
-                            dialog,
-                            done,
-                            total,
-                            getString(R.string.search_scan_files, done, total)
-                        )
-                    }
-                )
+                // v0.2.215（性能 T1-5）：整段哈希都留在同一个 IO 上下文里算。以前是每张图在 hashOf 里
+                // 各自 withContext(Dispatchers.IO)，两千张就是两千次线程往返；进度也按 SCAN_PROGRESS_STEP
+                // 张刷一次，不再每张都回主线程改一趟进度条。
+                val duplicates = withContext(Dispatchers.IO) {
+                    DuplicateFinder.find(
+                        items = loaded,
+                        hashOf = { item ->
+                            // 刚算出来的行也算「旧行」：下一段要拿它保住这一段的摘要。
+                            val base = fresh[item.id] ?: cached[item.id]
+                            // 旧行还算不算数由 FeatureCache 判断：体积 + 修改时间都对上才复用摘要。
+                            FeatureCache.sha256Of(base, item)
+                                ?: FileHash.sha256(File(item.path))
+                                    ?.also { hash ->
+                                        fresh[item.id] = FeatureCache.merged(item, base, sha256 = hash)
+                                    }
+                        },
+                        onProgress = { done, total ->
+                            reportScanProgress(dialog, done, total, R.string.search_scan_files)
+                        }
+                    )
+                }
 
                 // 已经归进「完全相同」的不再比画面：同一张图只出现在一段里。
                 val duplicateIds = duplicates.flatMap { it.members }.map { it.id }.toSet()
                 val pool = loaded.filterNot { it.id in duplicateIds }
-                val similar = SimilarFinder.find(
-                    items = pool,
-                    threshold = threshold,
-                    banned = ::bannedOf,
-                    hashOf = { item ->
-                        val base = fresh[item.id] ?: cached[item.id]
-                        val hash = FeatureCache.dhashOf(base, item)
-                            ?: withContext(Dispatchers.IO) { ImageDHash.of(File(item.path)) }
-                                ?.also { computed ->
-                                    fresh[item.id] = FeatureCache.merged(item, base, dhash = computed)
-                                }
-                        // 算出来的哈希顺手收进这一轮的内存表，切判定范围时直接用它。
-                        if (hash != null) collected[item.id] = hash
-                        hash
-                    },
-                    onProgress = { done, total ->
-                        BusyDialog.update(
-                            this@SearchActivity,
-                            dialog,
-                            done,
-                            total,
-                            getString(R.string.search_scan_frames, done, total)
-                        )
-                    }
-                )
+                val similar = withContext(Dispatchers.IO) {
+                    SimilarFinder.find(
+                        items = pool,
+                        threshold = threshold,
+                        banned = ::bannedOf,
+                        hashOf = { item ->
+                            val base = fresh[item.id] ?: cached[item.id]
+                            val hash = FeatureCache.dhashOf(base, item)
+                                ?: ImageDHash.of(File(item.path))
+                                    ?.also { computed ->
+                                        fresh[item.id] = FeatureCache.merged(item, base, dhash = computed)
+                                    }
+                            // 算出来的哈希顺手收进这一轮的内存表，切判定范围时直接用它。
+                            if (hash != null) collected[item.id] = hash
+                            hash
+                        },
+                        onProgress = { done, total ->
+                            reportScanProgress(dialog, done, total, R.string.search_scan_frames)
+                        }
+                    )
+                }
                 Scan(duplicates, similar, duplicateIds, pool, loaded)
             } catch (e: CancellationException) {
                 // 取消只是停这一轮：已经算出来的指纹照样写回去，下次进来少读一批文件。
@@ -290,8 +306,8 @@ class SearchActivity : AppCompatActivity() {
             scanned = result.items.size
 
             adapter.threshold = threshold
-            adapter.submitDuplicate(result.duplicates)
-            adapter.submitSimilar(result.similar, hashes)
+            // v0.2.215（性能 T1-3）：两段一起换，通知一次就够
+            adapter.submitAll(result.duplicates, result.similar, hashes)
             renderSelection()
             renderIgnoredButton()
             summaryRow.visibility = View.VISIBLE

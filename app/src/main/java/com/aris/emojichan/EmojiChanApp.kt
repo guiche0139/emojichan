@@ -12,6 +12,11 @@ class EmojiChanApp : Application() {
         super.onCreate()
         UiPrefs.applyNightMode(this)
         // 要读系统相册数据库，丢到后台线程；这里只是自检和恢复，不删任何东西。
-        Thread({ com.aris.emojichan.sender.AlbumPublish.onStart(this) }, "album-check").start()
+        // v0.2.215（性能 T1-10）：再降到后台优先级 —— 冷启动时它跟第一帧抢 CPU，而这件事一点都不急。
+        // 依旧是裸线程而不是协程：AlbumPublish.onStart 要在进程没有任何界面时也把暂存位恢复完。
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            com.aris.emojichan.sender.AlbumPublish.onStart(this)
+        }, "album-check").start()
     }
 }

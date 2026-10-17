@@ -31,4 +31,20 @@ object EmojiNaming {
         }
         return name + "(" + System.currentTimeMillis() + ")"
     }
+
+    /**
+     * 批量版本（v0.2.215）：一次拿住「已占用的名字」，逐条算完立刻占位。
+     *
+     * 与「一条一条调用 [unique]、每次都把结果写回集合」的结果**逐字一致**，区别只是不再每条都去
+     * 查一次全表（原来导 100 张 ≈ 5000 行读取）。批内同名也要各自唯一，靠的就是算完马上写回
+     * [taken]（[EmojiNamingTest] 压的就是这条）。
+     */
+    fun uniqueBatch(bases: List<String>, taken: Collection<String>): List<String> {
+        val used = taken.toMutableSet()
+        return bases.map { base ->
+            val name = unique(base, used)
+            used += name
+            name
+        }
+    }
 }

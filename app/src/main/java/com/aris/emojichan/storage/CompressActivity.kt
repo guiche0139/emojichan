@@ -84,6 +84,8 @@ class CompressActivity : AppCompatActivity() {
             }
         }
         list.adapter = adapter
+        // v0.2.215：列表高度不随内容变（match_parent），声明固定省掉整体重新测量。
+        list.setHasFixedSize(true)
 
         btnSelectAll.setOnClickListener { adapter.selectAllStatic() }
         btnClear.setOnClickListener { adapter.clearSelection() }

@@ -137,6 +137,20 @@ class EmojiDaoTest {
         assertEquals(3, dao.getAllEmojis().first().size)
     }
 
+    /**
+     * 批量导入（v0.2.215）：名字已经在外面算好时走 [EmojiDao.importEmojiWithName]，
+     * 与单条 [EmojiDao.importEmoji] 必须是同一条入库路 —— 名字照用、自动标签照挂。
+     */
+    @Test
+    fun importWithPrecomputedNameKeepsNameAndTag() = runTest {
+        val names = EmojiNaming.uniqueBatch(listOf("猫猫", "猫猫"), dao.getAllNames())
+        val first = dao.importEmojiWithName(emoji("猫猫"), names[0], EmojiDefaults.TAG_IMAGE)
+        val second = dao.importEmojiWithName(emoji("猫猫"), names[1], EmojiDefaults.TAG_IMAGE)
+
+        assertEquals(listOf("猫猫", "猫猫(1)"), listOf(first, second).map { dao.getById(it)!!.name })
+        assertEquals(listOf(EmojiDefaults.TAG_IMAGE), dao.getTagsOf(second).map { it.name })
+    }
+
     /** 需求：导入后自动挂「图片」/「动图」标签。 */
     @Test
     fun importAttachesAutoTag() = runTest {

@@ -41,6 +41,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 维护类任务的节流记录（v0.2.215，性能 T1-6）：只放时间戳，跟界面设置分开一份。 */
+private const val ORPHAN_CLEAN_PREFS = "maintenance_prefs"
+private const val KEY_ORPHAN_CLEAN_AT = "orphan_clean_at"
+
+/** 两次孤儿文件清理之间至少隔一天：扫一遍要先把全库的 filePath 读出来，再列一遍表情目录。 */
+private const val ORPHAN_CLEAN_INTERVAL_MS = 24 * 60 * 60 * 1000L
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = EmojiRepository(application)
@@ -202,12 +209,19 @@ class EmojiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        // 启动时清理孤儿文件（导入中断、记录被外部删除留下的残留），静默执行不打扰用户
+        // 启动时清理孤儿文件（导入中断、记录被外部删除留下的残留），静默执行不打扰用户。
+        // v0.2.215（性能 T1-6）：一天最多做一次 —— 这个活儿要先把全库 filePath 读出来再去列目录，
+        // 而残留文件不会自己长出来；每次新建界面都扫一遍纯属白干（导入中断留下的那些最多多留一天）。
         viewModelScope.launch(handler) {
+            val app = getApplication<Application>()
+            val prefs = app.getSharedPreferences(ORPHAN_CLEAN_PREFS, android.content.Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            if (now - prefs.getLong(KEY_ORPHAN_CLEAN_AT, 0L) < ORPHAN_CLEAN_INTERVAL_MS) return@launch
             val validPaths = repository.getAllFilePaths().toSet()
             withContext(Dispatchers.IO) {
-                ImageUtil.cleanOrphanFiles(getApplication(), validPaths)
+                ImageUtil.cleanOrphanFiles(app, validPaths)
             }
+            prefs.edit().putLong(KEY_ORPHAN_CLEAN_AT, now).apply()
         }
     }
 

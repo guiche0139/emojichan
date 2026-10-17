@@ -81,12 +81,16 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import com.aris.emojichan.sender.SenderPrefs
 
@@ -131,6 +135,14 @@ private const val MAX_PICK_IMAGES = 100
 
 /** 文件选择器背后的 MediaStore 文档 provider（同一个 id，它肯说真名 —— emc-2-008 实测）。 */
 private const val MEDIA_DOCUMENTS_AUTHORITY = "com.android.providers.media.documents"
+
+/**
+ * 导入时同时拷贝几张（v0.2.215，性能 T1-2）。
+ *
+ * 拷贝是「整份复制文件 + 跨进程问相册原图 + 解码读宽高」，一张几百毫秒，一路排下去 100 张就是几十秒。
+ * 4 是折中：再高就是几条流同时读同一张 SD 卡，反而更慢（存储带宽先到顶）。
+ */
+private const val IMPORT_PARALLELISM = 4
 
 class MainActivity : AppCompatActivity() {
 
@@ -185,11 +197,15 @@ class MainActivity : AppCompatActivity() {
     /**
      * 版本号的唯一出处：问包管理器。不用 BuildConfig —— 它在 release 下可能被 R8 改名 / 内联，
      * 而这个调用永远在。
+     *
+     * v0.2.215：改 by lazy —— 原来是个 getter，界面上读几次就问几次 PackageManager（每次一个
+     * binder 往返）；版本号一个进程里不会变。
      */
-    private val appVersion: String
-        get() = runCatching {
+    private val appVersion: String by lazy {
+        runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
         }.getOrDefault("?")
+    }
     private lateinit var themeSwatch: TextView
     private lateinit var settingsTheme: TextView
     private lateinit var settingsNight: TextView
@@ -301,9 +317,9 @@ class MainActivity : AppCompatActivity() {
         val level = ImageUtil.mediaAccessLevel(this)
         SendLog.d(
             "导入",
-            "相册权限结果=" + level + "（" + result.entries.joinToString {
+            "相册权限结果=" + level + " " + result.entries.joinToString {
                 it.key.substringAfterLast('.') + "=" + it.value
-            } + "）"
+            }
         )
         Toast.makeText(this, getString(R.string.import_grant_media_result, level), Toast.LENGTH_LONG)
             .show()
@@ -915,7 +931,7 @@ class MainActivity : AppCompatActivity() {
     private fun logShareIntent(intent: Intent) {
         SendLog.d(
             "分享",
-            "收到分享：action=" + intent.action + " type=" + intent.type +
+            "收到分享 action=" + intent.action + " type=" + intent.type +
                 " clipData=" + (intent.clipData?.itemCount ?: 0) + " data=" + intent.data
         )
         val extras = intent.extras ?: return
@@ -1298,8 +1314,8 @@ class MainActivity : AppCompatActivity() {
         merged.remove(packageName)
         SendLog.d(
             "悬浮球",
-            "应用清单：启动项 " + byLauncher.size + " 个 / 已安装 " + byInstalled.size +
-                " 个 / 兜底后共 " + merged.size + " 个"
+            "应用清单 launcher=" + byLauncher.size + " installed=" + byInstalled.size +
+                " merged=" + merged.size
         )
         val default = SenderPrefs.DEFAULT_BALL_PACKAGES
         val sorted = merged.sortedWith(compareBy({ if (it in default) 0 else 1 }, { packageLabel(it) }))
@@ -1926,6 +1942,8 @@ class MainActivity : AppCompatActivity() {
 
         emojiGrid.layoutManager = GridLayoutManager(this, 3)
         emojiGrid.adapter = adapter
+        // v0.2.215：列表本身的高度不随内容变（都是 match_parent），声明固定可省掉整体重新测量。
+        emojiGrid.setHasFixedSize(true)
         emojiGrid.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 updateScrollTop()
@@ -2366,7 +2384,9 @@ class MainActivity : AppCompatActivity() {
                 btnDelete.text = getString(R.string.btn_delete_count, selectedIds.size)
                 btnExport.text = getString(R.string.btn_export_count, selectedIds.size)
                 btnExport.isEnabled = selectedIds.isNotEmpty()
-                adapter.notifyDataSetChanged()
+                // v0.2.215：勾选变化只改可见那几格的勾选框。原来是 notifyDataSetChanged：连勾 20 张
+                // 就要把整屏十几格重绑 20 遍（每格重建一次 Glide 请求 + 重设四组 listener）。
+                adapter.updateSelection(selectedIds)
             }
         }
 
@@ -2596,25 +2616,42 @@ class MainActivity : AppCompatActivity() {
             var failed = 0
             var noName = 0
             try {
-                ordered.forEachIndexed { index, uri ->
-                    progress?.let { bar ->
-                        BusyDialog.update(
-                            this@MainActivity,
-                            bar,
-                            index + 1,
-                            ordered.size,
-                            getString(R.string.import_progress_format, index + 1, ordered.size)
-                        )
-                    }
-                    // 落库要整份拷贝文件、还要解码图片读宽高，全是阻塞 IO：
-                    // 放在主线程上，导入一张大图就会卡住界面甚至 ANR（emc-1-018）。
-                    when (withContext(Dispatchers.IO) { copyUriToLibrary(uri) }) {
-                        ImportOutcome.OK -> ok++
-                        ImportOutcome.NAME_FALLBACK -> {
-                            ok++
-                            noName++
+                // v0.2.215（性能 T1-2）：拷贝那一段不再一张一张排队。整份复制文件、解宽高全是阻塞 IO
+                // （还要跨进程问相册要原图），一张几百毫秒，100 张就是几十秒；这里放 4 路并发跑，
+                // 入库仍按用户看到的顺序一条一条来 —— 重名后缀就是按入库顺序定的（数据层同一个事务里加 (1)(2)…）。
+                val copied = AtomicInteger(0)
+                val gate = Semaphore(IMPORT_PARALLELISM)
+                val prepared = ordered.map { uri ->
+                    async(Dispatchers.IO) {
+                        // 单张出事只算这一张失败：以前异常会掀掉整批导入。
+                        val result = gate.withPermit {
+                            runCatching { EmojiImport.fromUri(this@MainActivity, uri) }
+                                .getOrDefault(EmojiImport.Result(null, false))
                         }
-                        ImportOutcome.FAILED -> failed++
+                        val done = copied.incrementAndGet()
+                        progress?.let { bar ->
+                            withContext(Dispatchers.Main) {
+                                BusyDialog.update(
+                                    this@MainActivity,
+                                    bar,
+                                    done,
+                                    ordered.size,
+                                    getString(R.string.import_progress_format, done, ordered.size)
+                                )
+                            }
+                        }
+                        result
+                    }
+                }
+                prepared.forEach { deferred ->
+                    val result = deferred.await()
+                    val emoji = result.emoji
+                    // 等它真的落库才算导入成功：不然一批导入里名字去重会各算各的。
+                    if (emoji == null || viewModel.importEmoji(emoji) == null) {
+                        failed++
+                    } else {
+                        ok++
+                        if (result.usedFallback) noName++
                     }
                 }
             } finally {

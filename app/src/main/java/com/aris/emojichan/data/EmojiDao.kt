@@ -122,9 +122,18 @@ interface EmojiDao {
      * @return 新行的 id。
      */
     @Transaction
-    suspend fun importEmoji(emoji: EmojiEntity, autoTagName: String?): Long {
-        val unique = EmojiNaming.unique(emoji.name, getAllNames())
-        val id = insert(emoji.copy(name = unique))
+    suspend fun importEmoji(emoji: EmojiEntity, autoTagName: String?): Long =
+        importEmojiWithName(emoji, EmojiNaming.unique(emoji.name, getAllNames()), autoTagName)
+
+    /**
+     * 与 [importEmoji] 同一条入库路，只是名字已经在外面算好了（批量导入用，v0.2.215）。
+     *
+     * 批量入口不能每条都去查一次全表：那是 O(N²)。名字的唯一性由调用方用
+     * [EmojiNaming.uniqueBatch] 保证 —— 它跟单条路径的结果逐字一致。
+     */
+    @Transaction
+    suspend fun importEmojiWithName(emoji: EmojiEntity, uniqueName: String, autoTagName: String?): Long {
+        val id = insert(emoji.copy(name = uniqueName))
         if (id > 0 && autoTagName != null) {
             val tagId = ensureTag(autoTagName)
             if (tagId != null) insertTagLinks(listOf(EmojiTagCrossRef(id, tagId)))

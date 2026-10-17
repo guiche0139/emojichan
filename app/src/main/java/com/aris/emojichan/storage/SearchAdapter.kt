@@ -10,6 +10,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListUpdateCallback
 import androidx.recyclerview.widget.RecyclerView
 import com.aris.emojichan.R
 import com.bumptech.glide.Glide
@@ -85,14 +87,34 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     fun keptIdOf(group: DuplicateFinder.Group): Long =
         keptIds[group.sha256] ?: group.members.first().id
 
-    fun submitDuplicate(list: List<DuplicateFinder.Group>) {
+    /**
+     * 一轮扫描出结果：两段一起换。
+     *
+     * v0.2.215（性能 T1-3）：以前是 submitDuplicate + submitSimilar 各通知一次，看得见的行等于从头绑两遍。
+     * 两段一起换的时候行号算术对不上任何旧行，整表通知一次就够。
+     */
+    fun submitAll(
+        duplicates: List<DuplicateFinder.Group>,
+        similar: List<SimilarFinder.Group>,
+        hashMap: Map<Long, Long>
+    ) {
         duplicateGroups.clear()
-        duplicateGroups.addAll(list)
-        keptIds.keys.retainAll(list.map { it.sha256 }.toSet())
+        duplicateGroups.addAll(duplicates)
+        keptIds.keys.retainAll(duplicates.map { it.sha256 }.toSet())
+        takeSimilar(similar, hashMap)
         notifyDataSetChanged()
     }
 
+    /** 只换「画面相近」这一段（改了一轮底线、重算那一半）。 */
     fun submitSimilar(list: List<SimilarFinder.Group>, hashMap: Map<Long, Long>) {
+        val before = similarGroups.toList()
+        takeSimilar(list, hashMap)
+        // v0.2.215（性能 T1-3）：只把真的变了的组标脏，不再整表通知。
+        dispatchSimilarUpdates(before)
+    }
+
+    /** 换掉「画面相近」这一段的内容与哈希表，不发通知（两个入口各自决定怎么通知）。 */
+    private fun takeSimilar(list: List<SimilarFinder.Group>, hashMap: Map<Long, Long>) {
         similarGroups.clear()
         similarGroups.addAll(list)
         hashes = hashMap
@@ -100,7 +122,42 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         list.forEach { group -> group.members.forEach { sizes[it.id] = it.bytes } }
         // 上一轮选中的可能已经被删了，或者在新范围下不再出现 —— 只留还在列表里的。
         selected.retainAll(sizes.keys)
-        notifyDataSetChanged()
+    }
+
+    /**
+     * 只把「画面相近」这一段里真的变了的行标脏（v0.2.215，性能 T1-3）。
+     *
+     * 这一段的行号是算出来的（前面还压着「完全相同」那一段），DiffUtil 报出来的是段内行号，
+     * 这里加一个段起点偏移再转发给列表。旧行和新行算同一行的口径是「代表（差得最少的那张）还是同一张」：
+     * 代表被删掉的行就当换了一行重画，反正只影响那一行。
+     */
+    private fun dispatchSimilarUpdates(before: List<SimilarFinder.Group>) {
+        val start = similarStart()
+        val callback = object : ListUpdateCallback {
+            override fun onInserted(position: Int, count: Int) =
+                notifyItemRangeInserted(position + start, count)
+
+            override fun onRemoved(position: Int, count: Int) =
+                notifyItemRangeRemoved(position + start, count)
+
+            override fun onMoved(fromPosition: Int, toPosition: Int) =
+                notifyItemMoved(fromPosition + start, toPosition + start)
+
+            override fun onChanged(position: Int, count: Int, payload: Any?) =
+                notifyItemRangeChanged(position + start, count, payload)
+        }
+        DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = before.size
+
+            override fun getNewListSize(): Int = similarGroups.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
+                before[oldItemPosition].members.first().id ==
+                    similarGroups[newItemPosition].members.first().id
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
+                before[oldItemPosition] == similarGroups[newItemPosition]
+        }, false).dispatchUpdatesTo(callback)
     }
 
     /** 这一组已经处理完了，从列表里拿掉。 */
@@ -109,12 +166,17 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         if (index < 0) return
         duplicateGroups.removeAt(index)
         keptIds.remove(sha256)
-        notifyDataSetChanged()
+        // v0.2.215（性能 T1-3）：删掉一组只动这一行和它后面的行 —— 以前整表标脏，删一组就把
+        // 看得见的行从头绑一遍（清一屏重复就是几十次）。
+        val from = 1 + index
+        notifyItemRemoved(from)
+        notifyItemRangeChanged(from, getItemCount() - from)
     }
 
     /** 这些「相近」的已经删掉了：从组里拿掉，只剩一张的组整组消失（一张不存在「相近」问题）。 */
     fun removeIds(ids: Set<Long>) {
         if (ids.isEmpty()) return
+        val before = similarGroups.toList()
         for (index in similarGroups.indices) {
             similarGroups[index] = similarGroups[index].without(ids, hashes)
         }
@@ -123,7 +185,8 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         similarGroups.sortWith(SimilarFinder.SIMILARITY_ORDER)
         selected.removeAll(ids)
         ids.forEach { sizes.remove(it) }
-        notifyDataSetChanged()
+        // v0.2.215（性能 T1-3）：只重画真的少了人 / 换了代表的组
+        dispatchSimilarUpdates(before)
     }
 
     override fun getItemCount(): Int = 2 + duplicateGroups.size + similarGroups.size
@@ -225,21 +288,38 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                 onDeleteDuplicateGroup?.invoke(group, DuplicateFinder.redundant(group, keptIdOf(group)))
             }
 
-            thumbs.removeAllViews()
-            group.members.forEach { item ->
-                thumbs.addView(duplicateThumb(context, item, item.id == keepId) {
-                    keptIds[group.sha256] = item.id
-                    notifyItemChanged(1 + index)
-                })
+            // v0.2.215（性能 T1-3）：一排缩略图的容器复用 —— 张数没变就只改每张图的内容，
+            // 不再把这一排 View 全扔掉重建（重建等于每张都重新 new ImageView + 重新过一遍 Glide）。
+            if (thumbs.childCount != group.members.size) {
+                thumbs.removeAllViews()
+                group.members.forEach { item ->
+                    thumbs.addView(duplicateThumb(context, item, item.id == keepId))
+                }
+            } else {
+                group.members.forEachIndexed { slot, item ->
+                    val image = thumbs.getChildAt(slot) as ImageView
+                    bindDuplicateThumb(image, item, item.id == keepId)
+                }
+            }
+            // 点击跟这一轮绑定的组走 —— 复用旧 View 时闭包里那个组也得换掉
+            for (slot in 0 until thumbs.childCount) {
+                val item = group.members[slot]
+                thumbs.getChildAt(slot).setOnClickListener { pickKeeper(group, item.id) }
             }
         }
 
-        /** 一张缩略图：被保留的那张描边加粗，点一下就把保留换成它。 */
+        /** 点缩略图：把这一组「保留哪张」换成点的那张，重画这一行。 */
+        private fun pickKeeper(group: DuplicateFinder.Group, id: Long) {
+            keptIds[group.sha256] = id
+            val index = duplicateGroups.indexOfFirst { it.sha256 == group.sha256 }
+            if (index >= 0) notifyItemChanged(1 + index)
+        }
+
+        /** 一张缩略图（新建）：内容交给 [bindDuplicateThumb] 填，新建和复用走同一条路。 */
         private fun duplicateThumb(
             context: Context,
             item: DuplicateFinder.Item,
-            kept: Boolean,
-            onClick: () -> Unit
+            kept: Boolean
         ): ImageView {
             val side = dp(context, 76f)
             val image = ImageView(context)
@@ -249,16 +329,29 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             image.scaleType = ImageView.ScaleType.CENTER_CROP
             val inset = dp(context, 2f)
             image.setPadding(inset, inset, inset, inset)
+            bindDuplicateThumb(image, item, kept)
+            return image
+        }
+
+        /** 往缩略图里填内容（新建和复用都走这里）：被保留的那张描边加粗。 */
+        private fun bindDuplicateThumb(
+            image: ImageView,
+            item: DuplicateFinder.Item,
+            kept: Boolean
+        ) {
+            val context = image.context
+            val side = dp(context, 76f)
             image.setBackgroundResource(
                 if (kept) R.drawable.bg_duplicate_thumb_kept else R.drawable.bg_duplicate_thumb
             )
             image.contentDescription = context.getString(R.string.duplicate_thumb_desc, item.name)
             Glide.with(image)
                 .load(File(item.path))
+                // v0.2.215（性能 T0-5）：边长本来就写死在这儿，直接把尺寸告诉 Glide，
+                // 别再让它按控件实测尺寸猜一遍。
+                .override(side, side)
                 .transform(RoundedCorners(dp(context, 10f)))
                 .into(image)
-            image.setOnClickListener { onClick() }
-            return image
         }
     }
 
@@ -283,22 +376,30 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                 R.string.similar_group_wasted,
                 StorageUsage.formatBytes(context, group.spareBytes)
             )
-            thumbs.removeAllViews()
-            group.members.forEach { item ->
-                thumbs.addView(similarThumb(context, item, item.id in selected))
+            // v0.2.215（性能 T1-3）：容器复用，跟「完全相同」那一段一个道理 —— 张数没变就不重建。
+            if (thumbs.childCount != group.members.size) {
+                thumbs.removeAllViews()
+                group.members.forEach { item ->
+                    thumbs.addView(similarThumb(context, item, item.id in selected))
+                }
+            } else {
+                group.members.forEachIndexed { slot, item ->
+                    bindSimilarThumb(
+                        thumbs.getChildAt(slot) as FrameLayout,
+                        item,
+                        item.id in selected
+                    )
+                }
             }
         }
 
-        /** 一张缩略图：选中的右上角挂个勾。点一下选中／取消，长按看详情。 */
+        /** 一张缩略图（新建）：内容交给 [bindSimilarThumb] 填，新建和复用走同一条路。 */
         private fun similarThumb(context: Context, item: DuplicateFinder.Item, chosen: Boolean): View {
             val side = dp(context, 76f)
             val frame = FrameLayout(context)
             frame.layoutParams = LinearLayout.LayoutParams(side, side).apply {
                 marginEnd = dp(context, 8f)
             }
-            frame.setBackgroundResource(R.drawable.bg_duplicate_thumb)
-            frame.contentDescription = context.getString(R.string.similar_thumb_desc, item.name)
-
             val image = ImageView(context)
             image.layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -307,26 +408,40 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             image.scaleType = ImageView.ScaleType.CENTER_CROP
             val inset = dp(context, 2f)
             image.setPadding(inset, inset, inset, inset)
+            frame.addView(image)
+            bindSimilarThumb(frame, item, chosen)
+            return frame
+        }
+
+        /**
+         * 往缩略图里填内容（新建和复用都走这里）：选中的右上角挂个勾，点一下选中／取消，长按看详情。
+         *
+         * 勾永远是这一格的第二个子 View：该在的时候不在就补一个，不该在的时候在位就拿掉 ——
+         * 组没变（只是别处重绑）时这一格什么都不用动。
+         */
+        private fun bindSimilarThumb(
+            frame: FrameLayout,
+            item: DuplicateFinder.Item,
+            chosen: Boolean
+        ) {
+            val context = frame.context
+            val side = dp(context, 76f)
+            frame.setBackgroundResource(R.drawable.bg_duplicate_thumb)
+            frame.contentDescription = context.getString(R.string.similar_thumb_desc, item.name)
+
+            val image = frame.getChildAt(0) as ImageView
             Glide.with(image)
                 .load(File(item.path))
+                // v0.2.215（性能 T0-5）：边长写死在这儿了，直接告诉 Glide
+                .override(side, side)
                 .transform(RoundedCorners(dp(context, 10f)))
                 .into(image)
-            frame.addView(image)
 
-            if (chosen) {
-                val badgeSide = dp(context, 22f)
-                val badge = TextView(context)
-                badge.layoutParams = FrameLayout.LayoutParams(badgeSide, badgeSide).apply {
-                    gravity = Gravity.TOP or Gravity.END
-                    topMargin = dp(context, 4f)
-                    marginEnd = dp(context, 4f)
-                }
-                badge.setBackgroundResource(R.drawable.bg_similar_badge)
-                badge.gravity = Gravity.CENTER
-                badge.text = "✓"
-                badge.setTextColor(Color.WHITE)
-                badge.textSize = 13f
-                frame.addView(badge)
+            val badge = frame.getChildAt(1)
+            if (chosen && badge == null) {
+                frame.addView(similarBadge(context))
+            } else if (!chosen && badge != null) {
+                frame.removeViewAt(1)
             }
 
             frame.setOnClickListener {
@@ -341,7 +456,23 @@ class SearchAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                 onOpen?.invoke(item)
                 true
             }
-            return frame
+        }
+
+        /** 右上角那个勾。 */
+        private fun similarBadge(context: Context): TextView {
+            val badgeSide = dp(context, 22f)
+            val badge = TextView(context)
+            badge.layoutParams = FrameLayout.LayoutParams(badgeSide, badgeSide).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = dp(context, 4f)
+                marginEnd = dp(context, 4f)
+            }
+            badge.setBackgroundResource(R.drawable.bg_similar_badge)
+            badge.gravity = Gravity.CENTER
+            badge.text = "✓"
+            badge.setTextColor(Color.WHITE)
+            badge.textSize = 13f
+            return badge
         }
     }
 }

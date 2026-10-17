@@ -90,6 +90,8 @@ class StaleEmojiActivity : AppCompatActivity() {
 
         grid.layoutManager = GridLayoutManager(this, 3)
         grid.adapter = adapter
+        // v0.2.215：格子高度固定（118dp 图 + 两行单行文本），列表本身高度也不随内容变。
+        grid.setHasFixedSize(true)
 
         findViewById<MaterialButtonToggleGroup>(R.id.staleWindow).apply {
             check(R.id.windowNever)
@@ -139,8 +141,25 @@ class StaleEmojiActivity : AppCompatActivity() {
         )
     }
 
+    /** 后台筛排的世代号：换范围点得快时，只让最后一次的结果落到界面上。 */
+    private var renderGeneration = 0
+
+    /**
+     * 重筛一遍并铺到界面上（v0.2.215，性能 T1-4）。
+     *
+     * 筛 + 排要遍历全库再排序：几千张时放在主线程跑，换判定范围那一下就是一次肉眼可见的卡顿，
+     * 所以算的部分丢给 [Dispatchers.Default]，算完回主线程做界面这一半。
+     */
     private fun render() {
-        val items = visibleItems()
+        val generation = ++renderGeneration
+        lifecycleScope.launch {
+            val items = withContext(Dispatchers.Default) { visibleItems() }
+            if (generation != renderGeneration) return@launch
+            showItems(items)
+        }
+    }
+
+    private fun showItems(items: List<EmojiEntity>) {
         // 换范围之后勾选里可能留着这一屏看不见的 id —— 那等于「删了用户没看着的东西」，一律摘掉
         selected.retainAll(items.map { it.id }.toSet())
         adapter.submit(items)
@@ -188,7 +207,8 @@ class StaleEmojiActivity : AppCompatActivity() {
         } else {
             selected.addAll(items.map { it.id })
         }
-        adapter.submit(items)
+        // v0.2.215（性能 T1-3）：条目没换，只是勾选变了 —— 重画屏幕上看得见的格子就够
+        adapter.notifySelectionChanged()
         renderSelection()
     }
 
